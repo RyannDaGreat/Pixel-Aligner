@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixel Art Alignment Tool</title>
+    <script src="https://code.iconify.design/3/3.1.0/iconify.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .controls {
+            padding: 15px 20px;
+            background: #16213e;
+            display: flex;
+            gap: 30px;
+            align-items: center;
+            flex-wrap: wrap;
+            border-bottom: 1px solid #0f3460;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .control-group label { font-size: 14px; color: #aaa; }
+        .control-group input[type="range"] { width: 200px; cursor: pointer; }
+        .btn {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            background: #0f3460;
+            color: #eee;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: #1a4a7a; }
+        .btn.active { background: #e94560; color: white; }
+        .btn.accent { background: #e94560; }
+        .icon-btn {
+            background: #0f3460;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 6px 10px;
+            color: #888;
+            transition: all 0.2s;
+            font-size: 16px;
+        }
+        .icon-btn:hover { background: #1a4a7a; }
+        .icon-btn.active { color: #e94560; }
+        .btn-group { display: flex; gap: 5px; }
+        .slider-group { display: flex; align-items: center; gap: 8px; }
+        .slider-pair { display: flex; flex-direction: column; gap: 6px; }
+        .num-input {
+            width: 50px;
+            background: #0f3460;
+            border: none;
+            color: #e94560;
+            padding: 4px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #mainCanvas { max-width: 100%; max-height: 100%; display: block; }
+        .drop-zone {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(26, 26, 46, 0.9);
+            border: 3px dashed #e94560;
+            margin: 20px;
+            border-radius: 10px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .drop-zone.active, .drop-zone.show-initial { opacity: 1; }
+        .drop-zone.show-initial { pointer-events: auto; }
+        .drop-zone p { font-size: 24px; color: #e94560; }
+        .instructions {
+            position: fixed;
+            bottom: 15px;
+            left: 15px;
+            background: rgba(22, 33, 62, 0.9);
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #888;
+            max-width: 300px;
+        }
+        #infoField {
+            background: #0f3460;
+            border: none;
+            color: #e94560;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            width: 320px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <div class="control-group slider-group">
+            <div class="slider-pair">
+                <div class="control-group">
+                    <label style="width: 60px;">N (cols):</label>
+                    <input type="range" id="nSlider" min="1" max="128" value="16">
+                    <input type="number" id="nInput" min="1" value="16" class="num-input">
+                </div>
+                <div class="control-group">
+                    <label style="width: 60px;">M (rows):</label>
+                    <input type="range" id="mSlider" min="1" max="128" value="16">
+                    <input type="number" id="mInput" min="1" value="16" class="num-input">
+                </div>
+            </div>
+            <button class="icon-btn active" id="resolutionLock" title="Lock N:M ratio">
+                <svg width="16" height="24" viewBox="0 0 16 24" fill="currentColor">
+                    <path d="M4 8h2V6a2 2 0 114 0v2h2V6a4 4 0 10-8 0v2z"/>
+                    <rect x="2" y="8" width="12" height="10" rx="2"/>
+                </svg>
+            </button>
+        </div>
+        <div class="control-group">
+            <label>Aspect:</label>
+            <button class="icon-btn active" id="aspectLock" title="Lock rectangle aspect ratio">
+                <svg width="16" height="24" viewBox="0 0 16 24" fill="currentColor">
+                    <path d="M4 8h2V6a2 2 0 114 0v2h2V6a4 4 0 10-8 0v2z"/>
+                    <rect x="2" y="8" width="12" height="10" rx="2"/>
+                </svg>
+            </button>
+        </div>
+        <div class="control-group">
+            <label>Grid Opacity:</label>
+            <div class="btn-group" id="opacityBtns">
+                <button class="btn" data-value="0">0%</button>
+                <button class="btn active" data-value="50">50%</button>
+                <button class="btn" data-value="100">100%</button>
+            </div>
+        </div>
+        <div class="control-group">
+            <label>Sample:</label>
+            <div class="btn-group" id="sampleBtns">
+                <button class="btn active" data-value="center">Center</button>
+                <button class="btn" data-value="mean">Mean</button>
+                <button class="btn" data-value="median">Median</button>
+            </div>
+        </div>
+        <div class="control-group">
+            <label>Expand:</label>
+            <button class="icon-btn" id="expandMode" title="Expand mode: resize by adding/removing cells">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
+                    <rect x="1" y="1" width="5" height="5" rx="1"/>
+                    <rect x="7" y="1" width="5" height="5" rx="1"/>
+                    <rect x="1" y="7" width="5" height="5" rx="1"/>
+                    <rect x="7" y="7" width="5" height="5" rx="1" opacity="0.4"/>
+                    <rect x="13" y="7" width="4" height="5" rx="1" opacity="0.4"/>
+                    <rect x="7" y="13" width="5" height="4" rx="1" opacity="0.4"/>
+                </svg>
+            </button>
+        </div>
+        <div class="control-group">
+            <button class="icon-btn" id="undoBtn" title="Undo (Ctrl+Z)">
+                <span class="iconify" data-icon="mdi:undo" data-width="20"></span>
+            </button>
+            <button class="icon-btn" id="redoBtn" title="Redo (Ctrl+Y)">
+                <span class="iconify" data-icon="mdi:redo" data-width="20"></span>
+            </button>
+        </div>
+        <div class="control-group">
+            <button class="btn" id="resetBtn">Reset Grid</button>
+        </div>
+        <div class="control-group">
+            <button class="btn accent" id="saveBtn">Save PNG</button>
+        </div>
+        <div class="control-group">
+            <input type="text" id="infoField" readonly title="Click to copy">
+        </div>
+    </div>
+
+    <div class="canvas-container" id="canvasContainer">
+        <canvas id="mainCanvas"></canvas>
+        <div class="drop-zone show-initial" id="dropZone">
+            <p>Drop an image here</p>
+        </div>
+    </div>
+
+    <div class="instructions">
+        Drag corners to resize the pixel grid. Drag inside to move it. Use sliders to change grid dimensions.
+    </div>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        const canvas = $('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = $('canvasContainer');
+        const dropZone = $('dropZone');
+        const nSlider = $('nSlider'), mSlider = $('mSlider');
+        const nInput = $('nInput'), mInput = $('mInput');
+
+        let image = null;
+        let gridOpacity = 0.5;
+        let sampleMode = 'center';
+        let rect = { x: 100, y: 100, width: 200, height: 200 };
+        let dragging = null;
+        let dragStart = { x: 0, y: 0 };
+        let rectStart = { x: 0, y: 0, width: 0, height: 0 };
+        let nStart = 16, mStart = 16;
+
+        let undoStack = [], redoStack = [];
+        const MAX_UNDO = 50;
+
+        let aspectLocked = true, lockedAspectRatio = 1;
+        let resolutionLocked = true, expandModeOn = false;
+
+        const defaultN = 16, defaultM = 16;
+
+        // Helper to set up exclusive button groups
+        function setupBtnGroup(containerId, onChange) {
+            const container = $(containerId);
+            container.querySelectorAll('.btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    container.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    onChange(btn.dataset.value);
+                    render();
+                    autoSave();
+                });
+            });
+        }
+
+        setupBtnGroup('opacityBtns', val => gridOpacity = parseInt(val) / 100);
+        setupBtnGroup('sampleBtns', val => sampleMode = val);
+
+        // Unified slider/input handling
+        function syncNM(source, newVal) {
+            newVal = Math.max(1, newVal || 1);
+            if (newVal > parseInt(nSlider.max)) nSlider.max = mSlider.max = newVal;
+            nSlider.value = nInput.value = newVal;
+            if (resolutionLocked) mSlider.value = mInput.value = newVal;
+            else if (source === 'm') { mSlider.value = mInput.value = newVal; nSlider.value = nInput.value = parseInt(nSlider.value); }
+            render();
+            autoSave();
+        }
+
+        nSlider.addEventListener('input', () => syncNM('n', parseInt(nSlider.value)));
+        mSlider.addEventListener('input', () => {
+            const val = parseInt(mSlider.value);
+            if (val > parseInt(mSlider.max)) mSlider.max = nSlider.max = val;
+            mSlider.value = mInput.value = val;
+            if (resolutionLocked) { nSlider.value = nInput.value = val; }
+            render(); autoSave();
+        });
+        nInput.addEventListener('input', () => syncNM('n', parseInt(nInput.value)));
+        mInput.addEventListener('input', () => {
+            const val = Math.max(1, parseInt(mInput.value) || 1);
+            if (val > parseInt(mSlider.max)) mSlider.max = nSlider.max = val;
+            mSlider.value = mInput.value = val;
+            if (resolutionLocked) { nSlider.value = nInput.value = val; }
+            render(); autoSave();
+        });
+
+        // Lock icon SVG paths
+        const LOCK_CLOSED = '<path d="M4 8h2V6a2 2 0 114 0v2h2V6a4 4 0 10-8 0v2z"/><rect x="2" y="8" width="12" height="10" rx="2"/>';
+        const LOCK_OPEN = '<path d="M12 8h-2V6a2 2 0 10-4 0v2H4V6a4 4 0 118 0v2z"/><rect x="2" y="8" width="12" height="10" rx="2"/>';
+
+        function updateLockIcon(btn, locked) {
+            btn.querySelector('svg').innerHTML = locked ? LOCK_CLOSED : LOCK_OPEN;
+        }
+
+        function setupToggle(btnId, getter, setter, onToggle) {
+            const btn = $(btnId);
+            btn.addEventListener('click', () => {
+                const newVal = !getter();
+                setter(newVal);
+                btn.classList.toggle('active', newVal);
+                if (onToggle) onToggle(newVal, btn);
+                autoSave();
+            });
+        }
+
+        setupToggle('aspectLock', () => aspectLocked, v => { aspectLocked = v; if (v) lockedAspectRatio = rect.width / rect.height; }, updateLockIcon);
+        setupToggle('resolutionLock', () => resolutionLocked, v => resolutionLocked = v, updateLockIcon);
+        setupToggle('expandMode', () => expandModeOn, v => expandModeOn = v);
+
+        // Undo/redo
+        function getState() { return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value) }; }
+        function setState(s) { rect = { ...s.rect }; nSlider.value = nInput.value = s.n; mSlider.value = mInput.value = s.m; render(); }
+        function saveState() { undoStack.push(getState()); if (undoStack.length > MAX_UNDO) undoStack.shift(); redoStack = []; }
+        function undo() { if (!undoStack.length) return; redoStack.push(getState()); setState(undoStack.pop()); }
+        function redo() { if (!redoStack.length) return; undoStack.push(getState()); setState(redoStack.pop()); }
+
+        $('undoBtn').addEventListener('click', undo);
+        $('redoBtn').addEventListener('click', redo);
+
+        // LocalStorage
+        function getFullState() {
+            return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value),
+                gridOpacity, sampleMode, aspectLocked, lockedAspectRatio, resolutionLocked, expandModeOn,
+                nMax: parseInt(nSlider.max), mMax: parseInt(mSlider.max) };
+        }
+
+        function setFullState(s) {
+            rect = { ...s.rect };
+            nSlider.max = mSlider.max = s.nMax || 128;
+            nSlider.value = nInput.value = s.n;
+            mSlider.value = mInput.value = s.m;
+            gridOpacity = s.gridOpacity; sampleMode = s.sampleMode;
+            aspectLocked = s.aspectLocked; lockedAspectRatio = s.lockedAspectRatio;
+            resolutionLocked = s.resolutionLocked; expandModeOn = s.expandModeOn;
+
+            // Update UI
+            $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == Math.round(gridOpacity * 100)));
+            $('sampleBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value === sampleMode));
+            ['aspectLock', 'resolutionLock'].forEach(id => { const btn = $(id); btn.classList.toggle('active', id === 'aspectLock' ? aspectLocked : resolutionLocked); updateLockIcon(btn, id === 'aspectLock' ? aspectLocked : resolutionLocked); });
+            $('expandMode').classList.toggle('active', expandModeOn);
+        }
+
+        function autoSave() {
+            localStorage.setItem('pixelArtToolState', JSON.stringify(getFullState()));
+            if (image) {
+                const tc = document.createElement('canvas');
+                tc.width = image.width; tc.height = image.height;
+                tc.getContext('2d').drawImage(image, 0, 0);
+                localStorage.setItem('pixelArtToolImage', tc.toDataURL('image/png'));
+            }
+        }
+
+        function loadFromLocalStorage() {
+            const stateJson = localStorage.getItem('pixelArtToolState');
+            const imageData = localStorage.getItem('pixelArtToolImage');
+            if (imageData) {
+                const img = new Image();
+                img.onload = () => { image = img; resizeCanvas(); dropZone.classList.remove('show-initial'); if (stateJson) setFullState(JSON.parse(stateJson)); render(); };
+                img.src = imageData;
+            } else if (stateJson) setFullState(JSON.parse(stateJson));
+        }
+
+        // Color sampling
+        function sampleCell(imgData, x0, y0, x1, y1, width) {
+            x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0));
+            x1 = Math.min(width, Math.floor(x1)); y1 = Math.min(imgData.height, Math.floor(y1));
+            if (x1 <= x0 || y1 <= y0) return null;
+
+            if (sampleMode === 'center') {
+                const idx = (Math.floor((y0 + y1) / 2) * width + Math.floor((x0 + x1) / 2)) * 4;
+                return [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
+            }
+
+            const pixels = [];
+            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                const idx = (y * width + x) * 4;
+                pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+            }
+            if (!pixels.length) return null;
+
+            if (sampleMode === 'mean') {
+                const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
+                return sum.map(v => v / pixels.length);
+            }
+            // median
+            const mid = Math.floor(pixels.length / 2);
+            return [0, 1, 2].map(i => pixels.map(p => p[i]).sort((a, b) => a - b)[mid]);
+        }
+
+        // Info field
+        function updateInfoField() {
+            const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
+            $('infoField').value = `x=${rect.x.toFixed(1)} y=${rect.y.toFixed(1)} w=${rect.width.toFixed(1)} h=${rect.height.toFixed(1)} n=${n} m=${m}`;
+        }
+        $('infoField').addEventListener('click', function() { this.select(); navigator.clipboard.writeText(this.value); });
+
+        // Save PNG
+        $('saveBtn').addEventListener('click', () => {
+            if (!image) return;
+            const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
+            const outCanvas = document.createElement('canvas');
+            outCanvas.width = n; outCanvas.height = m;
+            const outCtx = outCanvas.getContext('2d');
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
+            tempCanvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+            const imgData = tempCanvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+
+            const cellW = rect.width / n, cellH = rect.height / m;
+            for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                const color = sampleCell(imgData, rect.x + col * cellW, rect.y + row * cellH, rect.x + (col + 1) * cellW, rect.y + (row + 1) * cellH, canvas.width);
+                if (color) { outCtx.fillStyle = `rgb(${color.map(Math.round).join(',')})`; outCtx.fillRect(col, row, 1, 1); }
+            }
+
+            const link = document.createElement('a');
+            link.download = `pixel_art_x${rect.x.toFixed(0)}_y${rect.y.toFixed(0)}_w${rect.width.toFixed(0)}_h${rect.height.toFixed(0)}_n${n}_m${m}.png`;
+            link.href = outCanvas.toDataURL('image/png');
+            link.click();
+        });
+
+        // Reset
+        $('resetBtn').addEventListener('click', () => {
+            nSlider.value = nInput.value = defaultN;
+            mSlider.value = mInput.value = defaultM;
+            if (image) { rect.width = rect.height = 200; rect.x = (canvas.width - 200) / 2; rect.y = (canvas.height - 200) / 2; }
+            else rect = { x: 100, y: 100, width: 200, height: 200 };
+            aspectLocked = false; $('aspectLock').classList.remove('active'); updateLockIcon($('aspectLock'), false);
+            lockedAspectRatio = 1;
+            render(); autoSave();
+        });
+
+        // Drag and drop
+        container.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('active'); });
+        container.addEventListener('dragleave', e => { if (!container.contains(e.relatedTarget)) dropZone.classList.remove('active'); });
+        container.addEventListener('drop', e => {
+            e.preventDefault(); dropZone.classList.remove('active', 'show-initial');
+            const file = e.dataTransfer.files[0];
+            if (file?.type.startsWith('image/')) loadImage(file);
+        });
+
+        function loadImage(file) {
+            const reader = new FileReader();
+            reader.onload = e => {
+                const img = new Image();
+                img.onload = () => {
+                    image = img; resizeCanvas();
+                    const padding = 20;
+                    rect = { x: padding, y: padding, width: canvas.width - padding * 2, height: canvas.height - padding * 2 };
+                    if (aspectLocked) lockedAspectRatio = rect.width / rect.height;
+
+                    const baseSize = 16;
+                    if (image.width >= image.height) {
+                        nSlider.value = Math.min(128, Math.max(2, Math.round(baseSize * image.width / image.height)));
+                        mSlider.value = baseSize;
+                    } else {
+                        nSlider.value = baseSize;
+                        mSlider.value = Math.min(128, Math.max(2, Math.round(baseSize * image.height / image.width)));
+                    }
+                    nInput.value = nSlider.value; mInput.value = mSlider.value;
+                    render(); autoSave();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function resizeCanvas() {
+            if (!image) return;
+            canvas.width = image.width; canvas.height = image.height;
+            const cr = container.getBoundingClientRect();
+            const scale = Math.min((cr.width - 40) / image.width, (cr.height - 40) / image.height, 1);
+            canvas.style.width = image.width * scale + 'px';
+            canvas.style.height = image.height * scale + 'px';
+        }
+
+        function render() {
+            if (!image) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+            const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
+            const cellW = rect.width / n, cellH = rect.height / m;
+            const scale = canvas.width / canvas.getBoundingClientRect().width;
+
+            if (gridOpacity > 0) {
+                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                ctx.save(); ctx.globalAlpha = gridOpacity;
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const cellX = rect.x + col * cellW, cellY = rect.y + row * cellH;
+                    if (cellX + cellW < 0 || cellX > canvas.width || cellY + cellH < 0 || cellY > canvas.height) continue;
+                    const color = sampleCell(imgData, cellX, cellY, cellX + cellW, cellY + cellH, canvas.width);
+                    if (color) { ctx.fillStyle = `rgb(${color.map(Math.round).join(',')})`; ctx.fillRect(cellX, cellY, cellW + 0.5, cellH + 0.5); }
+                }
+                ctx.restore();
+            }
+
+            // Grid lines
+            ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = scale;
+            ctx.beginPath();
+            for (let i = 0; i <= n; i++) { const x = rect.x + i * cellW; ctx.moveTo(x, rect.y); ctx.lineTo(x, rect.y + rect.height); }
+            for (let i = 0; i <= m; i++) { const y = rect.y + i * cellH; ctx.moveTo(rect.x, y); ctx.lineTo(rect.x + rect.width, y); }
+            ctx.stroke();
+
+            // Border and handles
+            ctx.strokeStyle = '#e94560'; ctx.lineWidth = 2 * scale;
+            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+            ctx.fillStyle = '#e94560';
+            const hs = 10 * scale;
+            [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => {
+                ctx.fillRect(rect.x + cx * rect.width - hs / 2, rect.y + cy * rect.height - hs / 2, hs, hs);
+            });
+
+            updateInfoField();
+        }
+
+        function getMousePos(e) {
+            const cr = canvas.getBoundingClientRect();
+            return { x: (e.clientX - cr.left) * canvas.width / cr.width, y: (e.clientY - cr.top) * canvas.height / cr.height };
+        }
+
+        function getHitZone(pos) {
+            const hs = 15 * canvas.width / canvas.getBoundingClientRect().width;
+            const corners = [['tl', 0, 0], ['tr', 1, 0], ['bl', 0, 1], ['br', 1, 1]];
+            for (const [id, cx, cy] of corners) {
+                if (Math.abs(pos.x - (rect.x + cx * rect.width)) < hs && Math.abs(pos.y - (rect.y + cy * rect.height)) < hs) return id;
+            }
+            const inX = pos.x > rect.x && pos.x < rect.x + rect.width;
+            const inY = pos.y > rect.y && pos.y < rect.y + rect.height;
+            if (Math.abs(pos.x - rect.x) < hs && inY) return 'left';
+            if (Math.abs(pos.x - rect.x - rect.width) < hs && inY) return 'right';
+            if (Math.abs(pos.y - rect.y) < hs && inX) return 'top';
+            if (Math.abs(pos.y - rect.y - rect.height) < hs && inX) return 'bottom';
+            if (inX && inY) return 'move';
+            return null;
+        }
+
+        const CURSORS = { tl: 'nwse-resize', br: 'nwse-resize', tr: 'nesw-resize', bl: 'nesw-resize', left: 'ew-resize', right: 'ew-resize', top: 'ns-resize', bottom: 'ns-resize', move: 'move' };
+
+        canvas.addEventListener('mousedown', e => {
+            const pos = getMousePos(e);
+            dragging = getHitZone(pos);
+            if (dragging) { saveState(); dragStart = pos; rectStart = { ...rect }; nStart = parseInt(nSlider.value); mStart = parseInt(mSlider.value); }
+        });
+
+        canvas.addEventListener('mousemove', e => {
+            const pos = getMousePos(e);
+            canvas.style.cursor = CURSORS[getHitZone(pos)] || 'default';
+            if (!dragging) return;
+
+            let dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
+            if (e.shiftKey) { dx /= 10; dy /= 10; }
+            if (e.ctrlKey || e.metaKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+
+            if (dragging === 'move') {
+                let newX = rectStart.x + dx, newY = rectStart.y + dy;
+                if (expandModeOn && !e.shiftKey) {
+                    const cellW = rect.width / parseInt(nSlider.value), cellH = rect.height / parseInt(mSlider.value);
+                    newX = Math.round(newX / cellW) * cellW; newY = Math.round(newY / cellH) * cellH;
+                }
+                rect.x = newX; rect.y = newY;
+            } else if (expandModeOn) {
+                handleExpandResize(dx, dy);
+            } else if (aspectLocked) {
+                handleAspectResize(dx, dy);
+            } else {
+                handleFreeResize(dx, dy);
+            }
+            render();
+        });
+
+        function handleExpandResize(dx, dy) {
+            const cellW = rectStart.width / nStart, cellH = rectStart.height / mStart;
+            const cellDx = Math.round(dx / cellW), cellDy = Math.round(dy / cellH);
+
+            // Direction multipliers: [dxSign, dySign, anchorX, anchorY]
+            const cfg = {
+                br: [1, 1, 0, 0], tl: [-1, -1, 1, 1], tr: [1, -1, 0, 1], bl: [-1, 1, 1, 0],
+                right: [1, 0, 0, 0], left: [-1, 0, 1, 0], bottom: [0, 1, 0, 0], top: [0, -1, 0, 1]
+            }[dragging];
+            if (!cfg) return;
+
+            const [dxs, dys, ax, ay] = cfg;
+            const newN = Math.max(1, nStart + dxs * cellDx);
+            const newM = Math.max(1, mStart + dys * cellDy);
+
+            if (dxs) { rect.width = newN * cellW; if (ax) rect.x = rectStart.x + (nStart - newN) * cellW; }
+            if (dys) { rect.height = newM * cellH; if (ay) rect.y = rectStart.y + (mStart - newM) * cellH; }
+
+            if (newN > parseInt(nSlider.max)) nSlider.max = mSlider.max = newN;
+            if (newM > parseInt(mSlider.max)) mSlider.max = nSlider.max = newM;
+            if (dxs) { nSlider.value = nInput.value = newN; }
+            if (dys) { mSlider.value = mInput.value = newM; }
+        }
+
+        function handleAspectResize(dx, dy) {
+            const sf = Math.max(Math.abs(dx) / rectStart.width, Math.abs(dy) / rectStart.height);
+
+            if (['br', 'tl', 'tr', 'bl'].includes(dragging)) {
+                const signs = { br: dx + dy, tl: -(dx + dy), tr: dx - dy, bl: -dx + dy };
+                const sign = signs[dragging] > 0 ? 1 : -1;
+                const newW = Math.max(20, rectStart.width * (1 + sign * sf));
+                const newH = newW / lockedAspectRatio;
+                rect.width = newW; rect.height = newH;
+                if (dragging[0] === 't') rect.y = rectStart.y + rectStart.height - newH;
+                if (dragging[1] === 'l') rect.x = rectStart.x + rectStart.width - newW;
+            } else {
+                // Edge resize - scale from opposite edge center
+                const isHoriz = dragging === 'left' || dragging === 'right';
+                const delta = isHoriz ? dx : dy;
+                const fromStart = dragging === 'left' || dragging === 'top';
+
+                if (isHoriz) {
+                    const newW = Math.max(20, rectStart.width + (fromStart ? -delta : delta));
+                    const newH = newW / lockedAspectRatio;
+                    const centerY = rectStart.y + rectStart.height / 2;
+                    rect.width = newW; rect.height = newH; rect.y = centerY - newH / 2;
+                    if (fromStart) rect.x = rectStart.x + rectStart.width - newW;
+                } else {
+                    const newH = Math.max(20, rectStart.height + (fromStart ? -delta : delta));
+                    const newW = newH * lockedAspectRatio;
+                    const centerX = rectStart.x + rectStart.width / 2;
+                    rect.width = newW; rect.height = newH; rect.x = centerX - newW / 2;
+                    if (fromStart) rect.y = rectStart.y + rectStart.height - newH;
+                }
+            }
+        }
+
+        function handleFreeResize(dx, dy) {
+            const isLeft = dragging.includes('l') || dragging === 'left';
+            const isTop = dragging.includes('t') || dragging === 'top';
+            const isRight = dragging.includes('r') || dragging === 'right';
+            const isBottom = dragging.includes('b') || dragging === 'bottom';
+
+            if (isRight || (dragging.length === 2 && dragging[1] === 'r')) rect.width = Math.max(20, rectStart.width + dx);
+            if (isBottom || (dragging.length === 2 && dragging[0] === 'b')) rect.height = Math.max(20, rectStart.height + dy);
+            if (isLeft) { const nw = Math.max(20, rectStart.width - dx); rect.x = rectStart.x + rectStart.width - nw; rect.width = nw; }
+            if (isTop) { const nh = Math.max(20, rectStart.height - dy); rect.y = rectStart.y + rectStart.height - nh; rect.height = nh; }
+        }
+
+        canvas.addEventListener('mouseup', () => { if (dragging) autoSave(); dragging = null; });
+        canvas.addEventListener('mouseleave', () => { dragging = null; });
+        window.addEventListener('resize', () => { if (image) { resizeCanvas(); render(); } });
+
+        // Keyboard shortcuts
+        window.addEventListener('keydown', e => {
+            if ('123'.includes(e.key)) {
+                const opacity = { '1': 0, '2': 50, '3': 100 }[e.key];
+                $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == opacity));
+                gridOpacity = opacity / 100; render(); autoSave();
+            } else if (e.key.toLowerCase() === 's') { e.preventDefault(); $('saveBtn').click(); }
+            else if (e.key.toLowerCase() === 'x') { $('expandMode').click(); }
+            else if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+            else if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
+        });
+
+        loadFromLocalStorage();
+    </script>
+</body>
+</html>
