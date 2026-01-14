@@ -116,6 +116,38 @@
             width: 320px;
             cursor: pointer;
         }
+        .chroma-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 8px;
+            background: rgba(15, 52, 96, 0.5);
+            border-radius: 4px;
+        }
+        .color-swatch {
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            border: 2px solid #888;
+            cursor: pointer;
+            background: conic-gradient(#808080 25%, #fff 25% 50%, #808080 50% 75%, #fff 75%);
+            background-size: 8px 8px;
+        }
+        .color-swatch-inner {
+            width: 100%;
+            height: 100%;
+            border-radius: 2px;
+        }
+        .color-picker-hidden {
+            position: absolute;
+            width: 0;
+            height: 0;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .chroma-slider {
+            width: 80px;
+        }
     </style>
 </head>
 <body>
@@ -195,6 +227,21 @@
         <div class="control-group">
             <input type="text" id="infoField" readonly title="Click to copy">
         </div>
+        <div class="control-group chroma-group">
+            <label>Chroma:</label>
+            <button class="icon-btn" id="chromaToggle" title="Enable chroma key">
+                <span class="iconify" data-icon="mdi:eye-off" data-width="18"></span>
+            </button>
+            <div class="color-swatch" id="chromaSwatch" title="Click to pick color">
+                <div class="color-swatch-inner" id="chromaSwatchInner"></div>
+            </div>
+            <input type="color" id="chromaColorPicker" class="color-picker-hidden" value="#00ff00">
+            <button class="icon-btn" id="eyedropperBtn" title="Pick color from image (E)">
+                <span class="iconify" data-icon="mdi:eyedropper" data-width="18"></span>
+            </button>
+            <input type="range" id="chromaTolerance" min="0" max="150" value="30" class="chroma-slider" title="Color tolerance">
+            <span id="chromaToleranceVal" style="min-width: 25px; font-size: 12px; color: #e94560;">30</span>
+        </div>
     </div>
 
     <div class="canvas-container" id="canvasContainer">
@@ -231,6 +278,12 @@
 
         let aspectLocked = true, lockedAspectRatio = 1;
         let resolutionLocked = true, expandModeOn = false;
+
+        // Chroma key state
+        let chromaEnabled = false;
+        let chromaColor = [0, 255, 0]; // RGB
+        let chromaTolerance = 30;
+        let eyedropperMode = false;
 
         const defaultN = 16, defaultM = 16;
 
@@ -302,41 +355,109 @@
         setupToggle('resolutionLock', () => resolutionLocked, v => resolutionLocked = v, updateLockIcon);
         setupToggle('expandMode', () => expandModeOn, v => expandModeOn = v);
 
-        // Undo/redo
-        function getState() { return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value) }; }
-        function setState(s) { rect = { ...s.rect }; nSlider.value = nInput.value = s.n; mSlider.value = mInput.value = s.m; render(); }
-        function saveState() { undoStack.push(getState()); if (undoStack.length > MAX_UNDO) undoStack.shift(); redoStack = []; }
-        function undo() { if (!undoStack.length) return; redoStack.push(getState()); setState(undoStack.pop()); }
-        function redo() { if (!redoStack.length) return; undoStack.push(getState()); setState(redoStack.pop()); }
-
-        $('undoBtn').addEventListener('click', undo);
-        $('redoBtn').addEventListener('click', redo);
-
-        // LocalStorage
-        function getFullState() {
-            return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value),
-                gridOpacity, sampleMode, aspectLocked, lockedAspectRatio, resolutionLocked, expandModeOn,
-                nMax: parseInt(nSlider.max), mMax: parseInt(mSlider.max) };
+        // Chroma key controls
+        function updateChromaSwatch() {
+            const [r, g, b] = chromaColor;
+            $('chromaSwatchInner').style.background = chromaEnabled ? `rgb(${r},${g},${b})` : 'transparent';
+            $('chromaSwatch').style.borderColor = chromaEnabled ? '#e94560' : '#888';
         }
 
-        function setFullState(s) {
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? [parseInt(result[1], 16), parseInt(result[2], 16), parseInt(result[3], 16)] : [0, 255, 0];
+        }
+
+        function rgbToHex([r, g, b]) {
+            return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+        }
+
+        $('chromaToggle').addEventListener('click', () => {
+            chromaEnabled = !chromaEnabled;
+            $('chromaToggle').classList.toggle('active', chromaEnabled);
+            $('chromaToggle').querySelector('.iconify').dataset.icon = chromaEnabled ? 'mdi:eye' : 'mdi:eye-off';
+            updateChromaSwatch();
+            render();
+            autoSave();
+        });
+
+        $('chromaSwatch').addEventListener('click', () => {
+            $('chromaColorPicker').value = rgbToHex(chromaColor);
+            $('chromaColorPicker').click();
+        });
+
+        $('chromaColorPicker').addEventListener('input', e => {
+            chromaColor = hexToRgb(e.target.value);
+            if (!chromaEnabled) {
+                chromaEnabled = true;
+                $('chromaToggle').classList.add('active');
+                $('chromaToggle').querySelector('.iconify').dataset.icon = 'mdi:eye';
+            }
+            updateChromaSwatch();
+            render();
+            autoSave();
+        });
+
+        $('eyedropperBtn').addEventListener('click', () => {
+            eyedropperMode = !eyedropperMode;
+            $('eyedropperBtn').classList.toggle('active', eyedropperMode);
+            canvas.style.cursor = eyedropperMode ? 'crosshair' : 'default';
+        });
+
+        $('chromaTolerance').addEventListener('input', e => {
+            chromaTolerance = parseInt(e.target.value);
+            $('chromaToleranceVal').textContent = chromaTolerance;
+            render();
+            autoSave();
+        });
+
+        updateChromaSwatch();
+
+        // State helpers - used by undo/redo and localStorage
+        function getState() {
+            return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value),
+                gridOpacity, sampleMode, aspectLocked, lockedAspectRatio, resolutionLocked, expandModeOn,
+                nMax: parseInt(nSlider.max), mMax: parseInt(mSlider.max),
+                chromaEnabled, chromaColor, chromaTolerance };
+        }
+
+        function applyState(s) {
             rect = { ...s.rect };
             nSlider.max = mSlider.max = s.nMax || 128;
             nSlider.value = nInput.value = s.n;
             mSlider.value = mInput.value = s.m;
-            gridOpacity = s.gridOpacity; sampleMode = s.sampleMode;
-            aspectLocked = s.aspectLocked; lockedAspectRatio = s.lockedAspectRatio;
-            resolutionLocked = s.resolutionLocked; expandModeOn = s.expandModeOn;
+            gridOpacity = s.gridOpacity ?? 0.5;
+            sampleMode = s.sampleMode ?? 'center';
+            aspectLocked = s.aspectLocked ?? true;
+            lockedAspectRatio = s.lockedAspectRatio ?? 1;
+            resolutionLocked = s.resolutionLocked ?? true;
+            expandModeOn = s.expandModeOn ?? false;
+            chromaEnabled = s.chromaEnabled ?? false;
+            chromaColor = s.chromaColor ?? [0, 255, 0];
+            chromaTolerance = s.chromaTolerance ?? 30;
 
             // Update UI
             $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == Math.round(gridOpacity * 100)));
             $('sampleBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value === sampleMode));
             ['aspectLock', 'resolutionLock'].forEach(id => { const btn = $(id); btn.classList.toggle('active', id === 'aspectLock' ? aspectLocked : resolutionLocked); updateLockIcon(btn, id === 'aspectLock' ? aspectLocked : resolutionLocked); });
             $('expandMode').classList.toggle('active', expandModeOn);
+            $('chromaToggle').classList.toggle('active', chromaEnabled);
+            $('chromaToggle').querySelector('.iconify').dataset.icon = chromaEnabled ? 'mdi:eye' : 'mdi:eye-off';
+            $('chromaTolerance').value = chromaTolerance;
+            $('chromaToleranceVal').textContent = chromaTolerance;
+            updateChromaSwatch();
         }
 
+        // Undo/redo
+        function pushUndo() { undoStack.push(JSON.stringify(getState())); if (undoStack.length > MAX_UNDO) undoStack.shift(); redoStack = []; }
+        function undo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(getState())); applyState(JSON.parse(undoStack.pop())); render(); }
+        function redo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(getState())); applyState(JSON.parse(redoStack.pop())); render(); }
+
+        $('undoBtn').addEventListener('click', undo);
+        $('redoBtn').addEventListener('click', redo);
+
+        // LocalStorage
         function autoSave() {
-            localStorage.setItem('pixelArtToolState', JSON.stringify(getFullState()));
+            localStorage.setItem('pixelArtToolState', JSON.stringify(getState()));
             if (image) {
                 const tc = document.createElement('canvas');
                 tc.width = image.width; tc.height = image.height;
@@ -350,9 +471,9 @@
             const imageData = localStorage.getItem('pixelArtToolImage');
             if (imageData) {
                 const img = new Image();
-                img.onload = () => { image = img; resizeCanvas(); dropZone.classList.remove('show-initial'); if (stateJson) setFullState(JSON.parse(stateJson)); render(); };
+                img.onload = () => { image = img; resizeCanvas(); dropZone.classList.remove('show-initial'); if (stateJson) applyState(JSON.parse(stateJson)); render(); };
                 img.src = imageData;
-            } else if (stateJson) setFullState(JSON.parse(stateJson));
+            } else if (stateJson) applyState(JSON.parse(stateJson));
         }
 
         // Color sampling
@@ -405,7 +526,12 @@
             const cellW = rect.width / n, cellH = rect.height / m;
             for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
                 const color = sampleCell(imgData, rect.x + col * cellW, rect.y + row * cellH, rect.x + (col + 1) * cellW, rect.y + (row + 1) * cellH, canvas.width);
-                if (color) { outCtx.fillStyle = `rgb(${color.map(Math.round).join(',')})`; outCtx.fillRect(col, row, 1, 1); }
+                if (color) {
+                    // Apply chroma key to saved image (hard threshold)
+                    const alpha = chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance ? 0 : 1;
+                    outCtx.fillStyle = `rgba(${color.map(Math.round).join(',')},${alpha})`;
+                    outCtx.fillRect(col, row, 1, 1);
+                }
             }
 
             const link = document.createElement('a');
@@ -440,19 +566,6 @@
                 const img = new Image();
                 img.onload = () => {
                     image = img; resizeCanvas();
-                    const padding = 20;
-                    rect = { x: padding, y: padding, width: canvas.width - padding * 2, height: canvas.height - padding * 2 };
-                    if (aspectLocked) lockedAspectRatio = rect.width / rect.height;
-
-                    const baseSize = 16;
-                    if (image.width >= image.height) {
-                        nSlider.value = Math.min(128, Math.max(2, Math.round(baseSize * image.width / image.height)));
-                        mSlider.value = baseSize;
-                    } else {
-                        nSlider.value = baseSize;
-                        mSlider.value = Math.min(128, Math.max(2, Math.round(baseSize * image.height / image.width)));
-                    }
-                    nInput.value = nSlider.value; mInput.value = mSlider.value;
                     render(); autoSave();
                 };
                 img.src = e.target.result;
@@ -469,10 +582,27 @@
             canvas.style.height = image.height * scale + 'px';
         }
 
+        function colorDistance(r1, g1, b1, r2, g2, b2) {
+            return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+        }
+
         function render() {
             if (!image) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+            // Apply chroma key (hard threshold)
+            if (chromaEnabled) {
+                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imgData.data;
+                const [cr, cg, cb] = chromaColor;
+                for (let i = 0; i < data.length; i += 4) {
+                    if (colorDistance(data[i], data[i + 1], data[i + 2], cr, cg, cb) <= chromaTolerance) {
+                        data[i + 3] = 0;
+                    }
+                }
+                ctx.putImageData(imgData, 0, 0);
+            }
 
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
             const cellW = rect.width / n, cellH = rect.height / m;
@@ -534,13 +664,37 @@
 
         canvas.addEventListener('mousedown', e => {
             const pos = getMousePos(e);
+
+            // Eyedropper mode - pick color from image
+            if (eyedropperMode && image) {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                const pixel = tempCtx.getImageData(Math.floor(pos.x), Math.floor(pos.y), 1, 1).data;
+                chromaColor = [pixel[0], pixel[1], pixel[2]];
+                $('chromaColorPicker').value = rgbToHex(chromaColor);
+                if (!chromaEnabled) {
+                    chromaEnabled = true;
+                    $('chromaToggle').classList.add('active');
+                    $('chromaToggle').querySelector('.iconify').dataset.icon = 'mdi:eye';
+                }
+                updateChromaSwatch();
+                eyedropperMode = false;
+                $('eyedropperBtn').classList.remove('active');
+                canvas.style.cursor = 'default';
+                render();
+                autoSave();
+                return;
+            }
+
             dragging = getHitZone(pos);
-            if (dragging) { saveState(); dragStart = pos; rectStart = { ...rect }; nStart = parseInt(nSlider.value); mStart = parseInt(mSlider.value); }
+            if (dragging) { pushUndo(); dragStart = pos; rectStart = { ...rect }; nStart = parseInt(nSlider.value); mStart = parseInt(mSlider.value); }
         });
 
         canvas.addEventListener('mousemove', e => {
             const pos = getMousePos(e);
-            canvas.style.cursor = CURSORS[getHitZone(pos)] || 'default';
+            canvas.style.cursor = eyedropperMode ? 'crosshair' : (CURSORS[getHitZone(pos)] || 'default');
             if (!dragging) return;
 
             let dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
@@ -645,6 +799,8 @@
                 gridOpacity = opacity / 100; render(); autoSave();
             } else if (e.key.toLowerCase() === 's') { e.preventDefault(); $('saveBtn').click(); }
             else if (e.key.toLowerCase() === 'x') { $('expandMode').click(); }
+            else if (e.key.toLowerCase() === 'e') { $('eyedropperBtn').click(); }
+            else if (e.key.toLowerCase() === 'c') { $('chromaToggle').click(); }
             else if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
             else if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
         });
