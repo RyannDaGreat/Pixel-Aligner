@@ -224,8 +224,11 @@
                 <button class="btn" data-value="hexV" title="Pointy-top hexagon">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 0.5L13 4V10L7 13.5L1 10V4L7 0.5Z"/></svg>
                 </button>
-                <button class="btn" data-value="tri" title="Triangle tiles">
+                <button class="btn" data-value="tri" title="Equilateral triangles">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M7 1L13 13H1L7 1Z"/></svg>
+                </button>
+                <button class="btn" data-value="triR" title="Right triangles (90°)">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M1 1L13 1L1 13Z"/></svg>
                 </button>
             </div>
         </div>
@@ -375,6 +378,7 @@
             hex:    { wF: n => n * 0.75 + 0.25, hF: m => m + 0.5,        snapW: 0.75, snapH: 1 },
             hexV:   { wF: n => n + 0.5,         hF: m => m * 0.75 + 0.25, snapW: 1,    snapH: 0.75 },
             tri:    { wF: n => (n + 1) / 2,     hF: m => m,              snapW: 0.5,  snapH: 1 },
+            triR:   { wF: n => n / 2,           hF: m => m,              snapW: 0.5,  snapH: 1 },
             square: { wF: n => n,               hF: m => m,              snapW: 1,    snapH: 1 }
         };
 
@@ -654,6 +658,13 @@
                     const fill = colorToFill(sampleTriCell(imgData, { ...tri, cx: rect.x + tri.cx, cy: rect.y + tri.cy, x0: rect.x + tri.x0, y0: rect.y + tri.y0, x1: rect.x + tri.x1, y1: rect.y + tri.y1, x2: rect.x + tri.x2, y2: rect.y + tri.y2 }, image.width, image.height));
                     if (fill) paths += `<polygon points="${scalePts([[tri.x0, tri.y0], [tri.x1, tri.y1], [tri.x2, tri.y2]])}" fill="${fill}"/>\n`;
                 }
+            } else if (tileMode === 'triR') {
+                const { cellW: trCellW, cellH: trCellH } = getTriRGeometry(n, m, rect.width, rect.height);
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const tri = getTriRVertices(col, row, trCellW, trCellH, 0, 0);
+                    const fill = colorToFill(sampleTriRCell(imgData, { ...tri, cx: rect.x + tri.cx, cy: rect.y + tri.cy, x0: rect.x + tri.x0, y0: rect.y + tri.y0, x1: rect.x + tri.x1, y1: rect.y + tri.y1, x2: rect.x + tri.x2, y2: rect.y + tri.y2 }, image.width, image.height));
+                    if (fill) paths += `<polygon points="${scalePts([[tri.x0, tri.y0], [tri.x1, tri.y1], [tri.x2, tri.y2]])}" fill="${fill}"/>\n`;
+                }
             } else {
                 const cellW = rect.width / n, cellH = rect.height / m;
                 for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
@@ -888,6 +899,58 @@
             return aggregatePixels(pixels);
         }
 
+        // Right triangle (90°) helper functions - each square cell split diagonally
+        function getTriRGeometry(n, m, rectW, rectH) {
+            // n = number of triangles per row (2 per square cell), m = rows
+            const cellW = rectW / (n / 2);
+            const cellH = rectH / m;
+            return { cellW, cellH };
+        }
+
+        function getTriRVertices(col, row, cellW, cellH, offsetX, offsetY) {
+            // Each cell has 2 triangles: upper-left and lower-right
+            const cellCol = Math.floor(col / 2);
+            const isLower = col % 2 === 1;
+            const x = offsetX + cellCol * cellW;
+            const y = offsetY + row * cellH;
+
+            if (isLower) {
+                // Lower-right triangle: bottom-left, top-right, bottom-right
+                return {
+                    x0: x, y0: y + cellH,
+                    x1: x + cellW, y1: y,
+                    x2: x + cellW, y2: y + cellH,
+                    cx: x + cellW * 2/3, cy: y + cellH * 2/3
+                };
+            } else {
+                // Upper-left triangle: top-left, top-right, bottom-left
+                return {
+                    x0: x, y0: y,
+                    x1: x + cellW, y1: y,
+                    x2: x, y2: y + cellH,
+                    cx: x + cellW / 3, cy: y + cellH / 3
+                };
+            }
+        }
+
+        function sampleTriRCell(imgData, tri, width, height) {
+            const { x0, y0, x1, y1, x2, y2, cx, cy } = tri;
+            if (sampleMode === 'center') {
+                const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
+                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
+            }
+            const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2))), maxX = Math.min(width, Math.ceil(Math.max(x0, x1, x2)));
+            const minY = Math.max(0, Math.floor(Math.min(y0, y1, y2))), maxY = Math.min(height, Math.ceil(Math.max(y0, y1, y2)));
+            const pixels = [];
+            for (let y = minY; y < maxY; y++) for (let x = minX; x < maxX; x++) {
+                if (pointInTriangle(x + 0.5, y + 0.5, x0, y0, x1, y1, x2, y2)) {
+                    const idx = (y * width + x) * 4;
+                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                }
+            }
+            return aggregatePixels(pixels);
+        }
+
         // Cache image data to avoid recreating every frame
         let cachedImgData = null;
         let cachedImgDataSrc = null;
@@ -1020,6 +1083,14 @@
                     el.setAttribute('points', `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`);
                     setTileStyle(el, colorToFill(fastMode ? sampleCenter(tri.cx, tri.cy) : sampleTriCell(imgData, tri, image.width, image.height), 'transparent'));
                 }
+            } else if (tileMode === 'triR') {
+                const { cellW: trCellW, cellH: trCellH } = getTriRGeometry(n, m, rect.width, rect.height);
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const tri = getTriRVertices(col, row, trCellW, trCellH, rect.x, rect.y);
+                    const el = tiles[idx++];
+                    el.setAttribute('points', `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`);
+                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(tri.cx, tri.cy) : sampleTriRCell(imgData, tri, image.width, image.height), 'transparent'));
+                }
             } else {
                 for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
                     const x = rect.x + col * cellW, y = rect.y + row * cellH;
@@ -1039,19 +1110,23 @@
             svgElements.border.setAttribute('height', rect.height);
             svgElements.border.setAttribute('stroke', gridColorRgb);
 
-            // Update handles (size compensates for zoom so they appear constant on screen)
-            const hsZoom = getHandleSizeHit();
-            [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy], i) => {
-                const h = svgElements.handles[i];
-                h.setAttribute('x', rect.x + cx * rect.width - hsZoom / 2);
-                h.setAttribute('y', rect.y + cy * rect.height - hsZoom / 2);
-                h.setAttribute('width', hsZoom);
-                h.setAttribute('height', hsZoom);
-                h.setAttribute('fill', gridColorRgb);
-            });
-
+            updateHandles(gridColorRgb);
             updateView();
             updateInfoField();
+        }
+
+        function updateHandles(color) {
+            if (!svgElements.handles.length) return;
+            const hs = getHandleSizeHit();
+            const c = color || `rgb(${gridColor.join(',')})`;
+            [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy], i) => {
+                const h = svgElements.handles[i];
+                h.setAttribute('x', rect.x + cx * rect.width - hs / 2);
+                h.setAttribute('y', rect.y + cy * rect.height - hs / 2);
+                h.setAttribute('width', hs);
+                h.setAttribute('height', hs);
+                h.setAttribute('fill', c);
+            });
         }
 
         function getMousePos(e) {
@@ -1279,6 +1354,7 @@
                 viewOffset.x += viewX - viewX * scale;
                 viewOffset.y += viewY - viewY * scale;
                 viewZoom = newZoom;
+                updateHandles();
             } else {
                 // Two-finger pan
                 viewOffset.x -= e.deltaX;
@@ -1292,6 +1368,7 @@
             if (!image) return;
             viewZoom = 1;
             viewOffset = { x: 0, y: 0 };
+            updateHandles();
             updateView();
         });
 
