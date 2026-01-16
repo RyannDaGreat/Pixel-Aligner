@@ -524,10 +524,11 @@
                 wF: n => n, hF: m => (m + 1) / 2, snapW: 1, snapH: 0.5,
                 getGeometry: (n, m, w, h) => ({ triW: w / n, triH: h / ((m + 1) / 2) }),
                 getTile: (col, row, g, ox, oy) => {
-                    const cellRow = Math.floor(row / 2), isRight = row % 2 === 1;
-                    const baseX = ox + col * g.triW, baseY = oy + cellRow * g.triH;
-                    if (isRight) return { x0: baseX, y0: baseY, x1: baseX, y1: baseY + g.triH, x2: baseX + g.triW, y2: baseY + g.triH / 2, cx: baseX + g.triW / 3, cy: baseY + g.triH / 2 };
-                    return { x0: baseX + g.triW, y0: baseY, x1: baseX + g.triW, y1: baseY + g.triH, x2: baseX, y2: baseY + g.triH / 2, cx: baseX + g.triW * 2 / 3, cy: baseY + g.triH / 2 };
+                    // Alternate left/right based on (col + row) % 2
+                    const isRight = (col + row) % 2 === 0;
+                    const baseX = ox + col * g.triW, baseY = oy + row * g.triH / 2;
+                    if (isRight) return { x0: baseX, y0: baseY, x1: baseX, y1: baseY + g.triH, x2: baseX + g.triW, y2: baseY + g.triH / 2, cx: baseX + g.triW * 2 / 3, cy: baseY + g.triH / 2 };
+                    return { x0: baseX + g.triW, y0: baseY, x1: baseX + g.triW, y1: baseY + g.triH, x2: baseX, y2: baseY + g.triH / 2, cx: baseX + g.triW / 3, cy: baseY + g.triH / 2 };
                 },
                 sample: (imgData, t, w, h) => {
                     if (sampleMode === 'center') {
