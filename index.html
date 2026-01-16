@@ -704,8 +704,12 @@
             if (dragging === 'move') {
                 let newX = rectStart.x + dx, newY = rectStart.y + dy;
                 if (expandModeOn && !e.shiftKey) {
+                    // Snap relative to original position (snap the delta, not absolute position)
                     const cellW = rect.width / parseInt(nSlider.value), cellH = rect.height / parseInt(mSlider.value);
-                    newX = Math.round(newX / cellW) * cellW; newY = Math.round(newY / cellH) * cellH;
+                    const snappedDx = Math.round(dx / cellW) * cellW;
+                    const snappedDy = Math.round(dy / cellH) * cellH;
+                    newX = rectStart.x + snappedDx;
+                    newY = rectStart.y + snappedDy;
                 }
                 rect.x = newX; rect.y = newY;
             } else if (expandModeOn) {
