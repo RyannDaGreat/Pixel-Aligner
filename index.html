@@ -319,6 +319,10 @@
         let tileMode = 'square'; // 'square', 'hex', 'hexV', 'tri'
         let gridColor = [233, 69, 96]; // RGB for #e94560
 
+        // View transform state (pan/zoom for the whole canvas view)
+        let viewOffset = { x: 0, y: 0 };
+        let viewZoom = 1;
+
         // Helper to set up exclusive button groups
         function setupBtnGroup(containerId, onChange) {
             const container = $(containerId);
@@ -495,7 +499,7 @@
             chromaEnabled = s.chromaEnabled ?? false;
             chromaColor = s.chromaColor ?? [0, 255, 0];
             chromaTolerance = s.chromaTolerance ?? 30;
-            tileMode = s.tileMode ?? s.hexMode ? 'hex' : 'square'; // backwards compat
+            tileMode = s.tileMode ?? (s.hexMode ? 'hex' : 'square'); // backwards compat
             gridColor = s.gridColor ?? [233, 69, 96];
 
             // Update UI
@@ -745,21 +749,23 @@ ${paths}</svg>`;
             reader.readAsDataURL(file);
         }
 
-        let canvasScale = 1; // scale from image coords to display coords
+        let canvasScale = 1; // base scale from image coords to display coords (fit to container)
 
         function resizeCanvas() {
             if (!image) return;
             const cr = container.getBoundingClientRect();
             canvasScale = Math.min((cr.width - 40) / image.width, (cr.height - 40) / image.height, 1);
-            const displayW = image.width * canvasScale;
-            const displayH = image.height * canvasScale;
-            // Set canvas size for retina: internal pixels = display pixels * devicePixelRatio
-            canvas.width = displayW * RETINA;
-            canvas.height = displayH * RETINA;
-            canvas.style.width = displayW + 'px';
-            canvas.style.height = displayH + 'px';
-            // Scale context so we can draw in image coordinates
-            ctx.setTransform(canvasScale * RETINA, 0, 0, canvasScale * RETINA, 0, 0);
+            // Canvas fills container, we handle zoom/pan via transform
+            canvas.width = cr.width * RETINA;
+            canvas.height = cr.height * RETINA;
+            canvas.style.width = cr.width + 'px';
+            canvas.style.height = cr.height + 'px';
+        }
+
+        function updateTransform() {
+            // Combined transform: retina scaling, view zoom, base scale, and pan offset
+            const s = canvasScale * viewZoom * RETINA;
+            ctx.setTransform(s, 0, 0, s, viewOffset.x * RETINA, viewOffset.y * RETINA);
         }
 
         function colorDistance(r1, g1, b1, r2, g2, b2) {
@@ -998,8 +1004,10 @@ return medianColor(pixels);
 
         function render() {
             if (!image) return;
-            // Draw in image coordinates (transform handles scaling to canvas)
-            ctx.clearRect(0, 0, image.width, image.height);
+            // Clear entire canvas (in screen coords), then set transform for drawing
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            updateTransform();
             ctx.drawImage(image, 0, 0, image.width, image.height);
 
             // Get image data at original resolution for sampling
@@ -1025,7 +1033,7 @@ return medianColor(pixels);
 
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
             const cellW = rect.width / n, cellH = rect.height / m;
-            const lineWidth = 1 / canvasScale; // 1 screen pixel in image coords
+            const lineWidth = 1 / (canvasScale * viewZoom); // 1 screen pixel in image coords
 
             if (tileMode === 'hex') {
                 // Flat-top hexagonal grid rendering
@@ -1140,7 +1148,7 @@ return medianColor(pixels);
             ctx.strokeStyle = gridColorStr; ctx.lineWidth = 2 * lineWidth;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
             ctx.fillStyle = gridColorStr;
-            const hs = 10 / canvasScale; // 10 screen pixels in image coords
+            const hs = 10 / (canvasScale * viewZoom); // 10 screen pixels in image coords
             [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => {
                 ctx.fillRect(rect.x + cx * rect.width - hs / 2, rect.y + cy * rect.height - hs / 2, hs, hs);
             });
@@ -1150,12 +1158,17 @@ return medianColor(pixels);
 
         function getMousePos(e) {
             const cr = canvas.getBoundingClientRect();
-            // Convert screen coords to image coords
-            return { x: (e.clientX - cr.left) / canvasScale, y: (e.clientY - cr.top) / canvasScale };
+            // Convert screen coords to image coords (accounting for pan and zoom)
+            const screenX = e.clientX - cr.left;
+            const screenY = e.clientY - cr.top;
+            return {
+                x: (screenX - viewOffset.x) / (canvasScale * viewZoom),
+                y: (screenY - viewOffset.y) / (canvasScale * viewZoom)
+            };
         }
 
         function getHitZone(pos) {
-            const hs = 15 / canvasScale; // 15 screen pixels converted to image coords
+            const hs = 15 / (canvasScale * viewZoom); // 15 screen pixels converted to image coords
             const corners = [['tl', 0, 0], ['tr', 1, 0], ['bl', 0, 1], ['br', 1, 1]];
             for (const [id, cx, cy] of corners) {
                 if (Math.abs(pos.x - (rect.x + cx * rect.width)) < hs && Math.abs(pos.y - (rect.y + cy * rect.height)) < hs) return id;
@@ -1380,6 +1393,41 @@ return medianColor(pixels);
 
         window.addEventListener('mouseup', () => { if (dragging) autoSave(); dragging = null; });
         window.addEventListener('resize', () => { if (image) { resizeCanvas(); render(); } });
+
+        // Trackpad pan/zoom: two-finger scroll = pan, pinch = zoom
+        canvas.addEventListener('wheel', e => {
+            if (!image) return;
+            e.preventDefault();
+
+            const cr = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - cr.left;
+            const mouseY = e.clientY - cr.top;
+
+            if (e.ctrlKey) {
+                // Pinch-to-zoom (ctrlKey is set by macOS during pinch gestures)
+                const zoomFactor = 1 - e.deltaY * 0.01;
+                const newZoom = Math.min(Math.max(0.1, viewZoom * zoomFactor), 20);
+
+                // Zoom towards mouse position
+                const scale = newZoom / viewZoom;
+                viewOffset.x = mouseX - (mouseX - viewOffset.x) * scale;
+                viewOffset.y = mouseY - (mouseY - viewOffset.y) * scale;
+                viewZoom = newZoom;
+            } else {
+                // Two-finger pan
+                viewOffset.x -= e.deltaX;
+                viewOffset.y -= e.deltaY;
+            }
+            render();
+        }, { passive: false });
+
+        // Double-click to reset view
+        canvas.addEventListener('dblclick', e => {
+            if (!image) return;
+            viewZoom = 1;
+            viewOffset = { x: 0, y: 0 };
+            render();
+        });
 
         // Keyboard shortcuts
         window.addEventListener('keydown', e => {
