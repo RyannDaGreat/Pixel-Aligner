@@ -1034,7 +1034,7 @@ return medianColor(pixels);
             const nss = 'vector-effect="non-scaling-stroke"'; // keeps stroke width constant
             const gridColorRgba = `rgba(${gridColor.join(',')},0.5)`;
             const gridColorRgb = `rgb(${gridColor.join(',')})`;
-            const hs = getHandleSize();
+            const hs = getHandleSizeImg();
 
             // Helper to get fill color with chroma check
             function getFill(color) {
@@ -1118,25 +1118,25 @@ return medianColor(pixels);
         }
 
         function getMousePos(e) {
-            // Convert screen coords to image coords using viewBox
-            const sr = mainSvg.getBoundingClientRect();
-            const vbW = image.width / viewZoom;
-            const vbH = image.height / viewZoom;
-            const vbX = -viewOffset.x / (canvasScale * viewZoom);
-            const vbY = -viewOffset.y / (canvasScale * viewZoom);
-            return {
-                x: vbX + (e.clientX - sr.left) / sr.width * vbW,
-                y: vbY + (e.clientY - sr.top) / sr.height * vbH
-            };
+            // Use SVG's built-in coordinate transform (accounts for viewBox and preserveAspectRatio)
+            const pt = mainSvg.createSVGPoint();
+            pt.x = e.clientX;
+            pt.y = e.clientY;
+            const svgPt = pt.matrixTransform(mainSvg.getScreenCTM().inverse());
+            return { x: svgPt.x, y: svgPt.y };
         }
 
-        // Single source of truth for handle size (in image coords)
-        function getHandleSize() {
-            return 12 / (canvasScale * viewZoom);
+        // Handle size: for rendering use fixed image coords, for hit detection account for zoom
+        const HANDLE_SCREEN_PX = 12;
+        function getHandleSizeImg() {
+            return HANDLE_SCREEN_PX / canvasScale; // fixed size in image coords (viewBox will scale it)
+        }
+        function getHandleSizeHit() {
+            return HANDLE_SCREEN_PX / (canvasScale * viewZoom); // for hit detection after viewBox transform
         }
 
         function getHitZone(pos) {
-            const hs = getHandleSize();
+            const hs = getHandleSizeHit();
             const corners = [['tl', 0, 0], ['tr', 1, 0], ['bl', 0, 1], ['br', 1, 1]];
             for (const [id, cx, cy] of corners) {
                 if (Math.abs(pos.x - (rect.x + cx * rect.width)) < hs && Math.abs(pos.y - (rect.y + cy * rect.height)) < hs) return id;
