@@ -265,6 +265,8 @@
                 <button class="btn" data-value="0">0%</button>
                 <button class="btn" data-value="50">50%</button>
                 <button class="btn active" data-value="100">100%</button>
+                <button class="btn" data-value="tiles" title="Tiles only (no grid lines)">Tiles</button>
+                <button class="btn" data-value="solo" title="Tiles only (no image)">Solo</button>
             </div>
         </div>
         <div class="control-group">
@@ -410,7 +412,14 @@
         const RETINA = window.devicePixelRatio || 1;
 
         let image = null;
-        let gridOpacity = 1;
+        let viewMode = '100'; // '0', '50', '100', 'tiles', 'solo'
+        const VIEW_MODES = {
+            '0':     { fillOpacity: 0,   showStroke: true,  showImage: true },
+            '50':    { fillOpacity: 0.5, showStroke: true,  showImage: true },
+            '100':   { fillOpacity: 1,   showStroke: true,  showImage: true },
+            'tiles': { fillOpacity: 1,   showStroke: false, showImage: true },
+            'solo':  { fillOpacity: 1,   showStroke: false, showImage: false }
+        };
         let sampleMode = 'center';
         let rect = { x: 100, y: 100, width: DEFAULT_RECT_SIZE, height: DEFAULT_RECT_SIZE };
         let dragging = null;
@@ -709,7 +718,7 @@
             });
         }
 
-        setupBtnGroup('opacityBtns', val => { pushUndo(); gridOpacity = parseInt(val) / 100; });
+        setupBtnGroup('opacityBtns', val => { pushUndo(); viewMode = val; });
         setupBtnGroup('sampleBtns', val => { pushUndo(); sampleMode = val; });
 
         // Unified slider/input handling
@@ -899,7 +908,7 @@
         // State helpers - used by undo/redo and localStorage
         function getState() {
             return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value),
-                gridOpacity, sampleMode, aspectLocked, lockedAspectRatio, resolutionLocked, expandModeOn,
+                viewMode, sampleMode, aspectLocked, lockedAspectRatio, resolutionLocked, expandModeOn,
                 nMax: parseInt(nSlider.max), mMax: parseInt(mSlider.max),
                 chromaEnabled, chromaColor, chromaTolerance, tileMode, gridColor,
                 paletteEnabled, paletteColors: paletteColors.map(c => [...c]) };
@@ -910,7 +919,7 @@
             nSlider.max = mSlider.max = Math.min(s.nMax || 500, 500);
             nSlider.value = nInput.value = Math.min(s.n || 16, 500);
             mSlider.value = mInput.value = Math.min(s.m || 16, 500);
-            gridOpacity = s.gridOpacity ?? 0.5;
+            viewMode = s.viewMode ?? (s.gridOpacity !== undefined ? String(Math.round(s.gridOpacity * 100)) : '100'); // backwards compat
             sampleMode = s.sampleMode ?? 'center';
             aspectLocked = s.aspectLocked ?? true;
             lockedAspectRatio = s.lockedAspectRatio ?? 1;
@@ -926,7 +935,7 @@
 
             // Update UI
             updateGridColorSwatch();
-            setBtnGroupValue('opacityBtns', Math.round(gridOpacity * 100));
+            setBtnGroupValue('opacityBtns', viewMode);
             setBtnGroupValue('sampleBtns', sampleMode);
             setBtnGroupValue('tileBtns', tileMode);
             setLockState('aspectLock', aspectLocked);
@@ -1191,6 +1200,7 @@
             const fastMode = dragging !== null;
             const gridColorRgba = `rgba(${gridColor.join(',')},0.5)`;
             const gridColorRgb = `rgb(${gridColor.join(',')})`;
+            const vm = VIEW_MODES[viewMode];
 
             // Update image
             if (svgElements.image.getAttribute('href') !== imageSrc) {
@@ -1198,6 +1208,7 @@
                 svgElements.image.setAttribute('width', image.width);
                 svgElements.image.setAttribute('height', image.height);
             }
+            svgElements.image.style.display = vm.showImage ? '' : 'none';
 
             // Get shape config
             const shape = SHAPES[tileMode];
@@ -1230,8 +1241,8 @@
                             [imgData.data[(py * image.width + px) * 4], imgData.data[(py * image.width + px) * 4 + 1], imgData.data[(py * image.width + px) * 4 + 2]] : null; })() :
                     shape.sample(imgData, tile, image.width, image.height);
                 el.setAttribute('fill', colorToFill(color, 'transparent') || 'none');
-                el.setAttribute('fill-opacity', gridOpacity);
-                el.setAttribute('stroke', gridColorRgba);
+                el.setAttribute('fill-opacity', vm.fillOpacity);
+                el.setAttribute('stroke', vm.showStroke ? gridColorRgba : 'none');
             }
 
             // Update border
@@ -1520,11 +1531,11 @@
 
         // Keyboard shortcuts
         window.addEventListener('keydown', e => {
-            if ('123'.includes(e.key)) {
+            if ('12345'.includes(e.key)) {
                 pushUndo();
-                const opacity = { '1': 0, '2': 50, '3': 100 }[e.key];
-                setBtnGroupValue('opacityBtns', opacity);
-                gridOpacity = opacity / 100;
+                const modes = { '1': '0', '2': '50', '3': '100', '4': 'tiles', '5': 'solo' };
+                viewMode = modes[e.key];
+                setBtnGroupValue('opacityBtns', viewMode);
                 update();
             } else if (e.key.toLowerCase() === 's') { e.preventDefault(); $('saveBtn').click(); }
             else if (e.key.toLowerCase() === 'g') { e.preventDefault(); $('saveSvgBtn').click(); }
