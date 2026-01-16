@@ -240,6 +240,7 @@
         </div>
         <div class="control-group">
             <button class="btn accent" id="saveBtn">Save PNG</button>
+            <button class="btn accent" id="saveSvgBtn">Save SVG</button>
         </div>
         <div class="control-group">
             <input type="text" id="infoField" readonly title="Click to copy">
@@ -561,6 +562,115 @@
             link.download = `pixel_art_x${rect.x.toFixed(0)}_y${rect.y.toFixed(0)}_w${rect.width.toFixed(0)}_h${rect.height.toFixed(0)}_n${n}_m${m}.png`;
             link.href = outCanvas.toDataURL('image/png');
             link.click();
+        });
+
+        // Save SVG - preserves exact tile geometry
+        $('saveSvgBtn').addEventListener('click', () => {
+            if (!image) return;
+            const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
+            tempCanvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+            const imgData = tempCanvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+
+            // SVG dimensions - use a reasonable output size
+            const svgW = 800, svgH = 800 * (rect.height / rect.width);
+            const scaleX = svgW / rect.width, scaleY = svgH / rect.height;
+
+            let paths = '';
+
+            function rgbToFill(color) {
+                if (!color) return null;
+                if (chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance) {
+                    return null; // transparent
+                }
+                return `rgb(${color.map(Math.round).join(',')})`;
+            }
+
+            if (tileMode === 'hex') {
+                const { hexW, hexH, halfW, halfH } = getHexGeometry(n, m, rect.width, rect.height);
+                for (let col = 0; col < n; col++) {
+                    for (let row = 0; row < m; row++) {
+                        const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, 0, 0);
+                        const color = sampleHexCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, canvas.width, canvas.height);
+                        const fill = rgbToFill(color);
+                        if (fill) {
+                            // Flat-top hex vertices
+                            const pts = [
+                                [cx + halfW, cy],
+                                [cx + halfW * 0.5, cy - halfH],
+                                [cx - halfW * 0.5, cy - halfH],
+                                [cx - halfW, cy],
+                                [cx - halfW * 0.5, cy + halfH],
+                                [cx + halfW * 0.5, cy + halfH]
+                            ].map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
+                            paths += `<polygon points="${pts}" fill="${fill}"/>\n`;
+                        }
+                    }
+                }
+            } else if (tileMode === 'hexV') {
+                const { hexW, hexH, halfW, halfH } = getHexVGeometry(n, m, rect.width, rect.height);
+                for (let row = 0; row < m; row++) {
+                    for (let col = 0; col < n; col++) {
+                        const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, 0, 0);
+                        const color = sampleHexVCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, canvas.width, canvas.height);
+                        const fill = rgbToFill(color);
+                        if (fill) {
+                            // Pointy-top hex vertices
+                            const pts = [
+                                [cx, cy - halfH],
+                                [cx + halfW, cy - halfH * 0.5],
+                                [cx + halfW, cy + halfH * 0.5],
+                                [cx, cy + halfH],
+                                [cx - halfW, cy + halfH * 0.5],
+                                [cx - halfW, cy - halfH * 0.5]
+                            ].map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
+                            paths += `<polygon points="${pts}" fill="${fill}"/>\n`;
+                        }
+                    }
+                }
+            } else if (tileMode === 'tri') {
+                const { triW, triH } = getTriGeometry(n, m, rect.width, rect.height);
+                for (let row = 0; row < m; row++) {
+                    for (let col = 0; col < n; col++) {
+                        const tri = getTriVertices(col, row, triW, triH, 0, 0);
+                        const color = sampleTriCell(imgData, { ...tri, cx: rect.x + tri.cx, cy: rect.y + tri.cy, x0: rect.x + tri.x0, y0: rect.y + tri.y0, x1: rect.x + tri.x1, y1: rect.y + tri.y1, x2: rect.x + tri.x2, y2: rect.y + tri.y2 }, canvas.width, canvas.height);
+                        const fill = rgbToFill(color);
+                        if (fill) {
+                            const pts = [
+                                [tri.x0, tri.y0],
+                                [tri.x1, tri.y1],
+                                [tri.x2, tri.y2]
+                            ].map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
+                            paths += `<polygon points="${pts}" fill="${fill}"/>\n`;
+                        }
+                    }
+                }
+            } else {
+                // Square
+                const cellW = rect.width / n, cellH = rect.height / m;
+                for (let row = 0; row < m; row++) {
+                    for (let col = 0; col < n; col++) {
+                        const color = sampleCell(imgData, rect.x + col * cellW, rect.y + row * cellH, rect.x + (col + 1) * cellW, rect.y + (row + 1) * cellH, canvas.width);
+                        const fill = rgbToFill(color);
+                        if (fill) {
+                            paths += `<rect x="${(col * cellW * scaleX).toFixed(2)}" y="${(row * cellH * scaleY).toFixed(2)}" width="${(cellW * scaleX).toFixed(2)}" height="${(cellH * scaleY).toFixed(2)}" fill="${fill}"/>\n`;
+                        }
+                    }
+                }
+            }
+
+            const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${svgW.toFixed(0)}" height="${svgH.toFixed(0)}" viewBox="0 0 ${svgW.toFixed(0)} ${svgH.toFixed(0)}">
+${paths}</svg>`;
+
+            const blob = new Blob([svg], { type: 'image/svg+xml' });
+            const link = document.createElement('a');
+            link.download = `pixel_art_${tileMode}_n${n}_m${m}.svg`;
+            link.href = URL.createObjectURL(blob);
+            link.click();
+            URL.revokeObjectURL(link.href);
         });
 
         // Reset
@@ -1207,6 +1317,7 @@
                 $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == opacity));
                 gridOpacity = opacity / 100; render(); autoSave();
             } else if (e.key.toLowerCase() === 's') { e.preventDefault(); $('saveBtn').click(); }
+            else if (e.key.toLowerCase() === 'g') { e.preventDefault(); $('saveSvgBtn').click(); }
             else if (e.key.toLowerCase() === 'x') { $('expandMode').click(); }
             else if (e.key.toLowerCase() === 'h') {
                 // Cycle tile modes: square -> hex -> hexV -> tri -> square
