@@ -1034,7 +1034,7 @@ return medianColor(pixels);
             const nss = 'vector-effect="non-scaling-stroke"'; // keeps stroke width constant
             const gridColorRgba = `rgba(${gridColor.join(',')},0.5)`;
             const gridColorRgb = `rgb(${gridColor.join(',')})`;
-            const hs = 10 / (canvasScale * viewZoom); // handle size in image coords
+            const hs = getHandleSize();
 
             // Helper to get fill color with chroma check
             function getFill(color) {
@@ -1130,8 +1130,13 @@ return medianColor(pixels);
             };
         }
 
+        // Single source of truth for handle size (in image coords)
+        function getHandleSize() {
+            return 12 / (canvasScale * viewZoom);
+        }
+
         function getHitZone(pos) {
-            const hs = 15 / (canvasScale * viewZoom); // 15 screen pixels converted to image coords
+            const hs = getHandleSize();
             const corners = [['tl', 0, 0], ['tr', 1, 0], ['bl', 0, 1], ['br', 1, 1]];
             for (const [id, cx, cy] of corners) {
                 if (Math.abs(pos.x - (rect.x + cx * rect.width)) < hs && Math.abs(pos.y - (rect.y + cy * rect.height)) < hs) return id;
