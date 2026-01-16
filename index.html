@@ -150,6 +150,82 @@
         .chroma-slider {
             width: 80px;
         }
+        /* Palette panel */
+        .palette-panel {
+            position: fixed;
+            top: 60px;
+            right: 0;
+            width: 260px;
+            max-height: calc(100vh - 80px);
+            background: #16213e;
+            border-left: 1px solid #0f3460;
+            border-bottom: 1px solid #0f3460;
+            border-radius: 0 0 0 8px;
+            transform: translateX(100%);
+            transition: transform 0.2s ease;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+        }
+        .palette-panel.open { transform: translateX(0); }
+        .palette-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            border-bottom: 1px solid #0f3460;
+            background: #0f3460;
+        }
+        .palette-header span { font-size: 14px; font-weight: 500; }
+        .palette-toggle, .palette-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 15px;
+            border-bottom: 1px solid #0f3460;
+        }
+        .palette-toggle label { font-size: 13px; color: #aaa; }
+        .palette-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 4px;
+            padding: 10px;
+            flex: 1;
+            overflow-y: auto;
+            align-content: start;
+            min-height: 80px;
+        }
+        .palette-swatch {
+            aspect-ratio: 1;
+            border-radius: 3px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            position: relative;
+            transition: border-color 0.1s;
+        }
+        .palette-swatch:hover { border-color: #e94560; }
+        .palette-swatch .remove-btn {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            width: 14px;
+            height: 14px;
+            background: #e94560;
+            border-radius: 50%;
+            font-size: 10px;
+            line-height: 14px;
+            text-align: center;
+            color: white;
+            display: none;
+            cursor: pointer;
+        }
+        .palette-swatch:hover .remove-btn { display: block; }
+        .palette-stats {
+            padding: 8px 15px;
+            font-size: 12px;
+            color: #888;
+            border-top: 1px solid #0f3460;
+        }
     </style>
 </head>
 <body>
@@ -272,6 +348,11 @@
             <input type="range" id="chromaTolerance" min="0" max="150" value="30" class="chroma-slider" title="Color tolerance">
             <span id="chromaToleranceVal" style="min-width: 25px; font-size: 12px; color: #e94560;">30</span>
         </div>
+        <div class="control-group">
+            <button class="icon-btn" id="paletteToggle" title="Color Palette (P)">
+                <span class="iconify" data-icon="mdi:palette" data-width="20"></span>
+            </button>
+        </div>
     </div>
 
     <div class="canvas-container" id="canvasContainer">
@@ -286,6 +367,30 @@
     <div class="instructions">
         Drag corners to resize the pixel grid. Drag inside to move it. Use sliders to change grid dimensions.
     </div>
+
+    <!-- Palette Panel -->
+    <div class="palette-panel" id="palettePanel">
+        <div class="palette-header">
+            <span>Color Palette</span>
+            <button class="icon-btn" id="palettePanelClose" style="padding: 4px 8px;">×</button>
+        </div>
+        <div class="palette-toggle">
+            <button class="icon-btn" id="paletteEnabledBtn" title="Enable palette restriction">
+                <span class="iconify" data-icon="mdi:checkbox-blank-outline" data-width="18"></span>
+            </button>
+            <label>Restrict to palette</label>
+        </div>
+        <div class="palette-controls">
+            <button class="btn" id="addColorPickerBtn" title="Add color via picker">+ Color</button>
+            <button class="icon-btn" id="paletteEyedropperBtn" title="Pick color from image">
+                <span class="iconify" data-icon="mdi:eyedropper" data-width="18"></span>
+            </button>
+            <button class="btn" id="clearColorsBtn">Clear</button>
+        </div>
+        <div class="palette-grid" id="paletteGrid"></div>
+        <div class="palette-stats"><span id="paletteColorCount">0</span> colors</div>
+    </div>
+    <input type="color" id="paletteColorPicker" class="color-picker-hidden">
 
     <script>
         const $ = id => document.getElementById(id);
@@ -325,6 +430,13 @@
         let eyedropperMode = false;
         let tileMode = 'square'; // 'square', 'hex', 'hexV', 'tri', 'triH'
         let gridColor = [233, 69, 96]; // RGB for #e94560
+
+        // Palette state
+        let paletteEnabled = false;
+        let paletteColors = []; // Array of [r,g,b]
+        let palettePanelOpen = false;
+        let paletteEyedropperMode = false;
+        let paletteEditingIndex = -1; // -1 = adding new, >= 0 = editing existing
 
         // View transform state (pan/zoom for the whole canvas view)
         let viewOffset = { x: 0, y: 0 };
@@ -370,7 +482,20 @@
             if (chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance) {
                 return nullValue;
             }
+            // Apply palette restriction
+            if (paletteEnabled && paletteColors.length) {
+                color = nearestPaletteColor(color);
+            }
             return `rgb(${color[0]|0},${color[1]|0},${color[2]|0})`;
+        }
+
+        function nearestPaletteColor([r, g, b]) {
+            let minDist = Infinity, nearest = [r, g, b];
+            for (const pc of paletteColors) {
+                const d = colorDistance(r, g, b, pc[0], pc[1], pc[2]);
+                if (d < minDist) { minDist = d; nearest = pc; }
+            }
+            return nearest;
         }
 
         // Point-in-shape test functions (shared utilities)
@@ -676,12 +801,108 @@
 
         updateGridColorSwatch();
 
+        // Palette panel functions
+        function togglePalettePanel(open) {
+            palettePanelOpen = open ?? !palettePanelOpen;
+            $('palettePanel').classList.toggle('open', palettePanelOpen);
+            $('paletteToggle').classList.toggle('active', palettePanelOpen);
+        }
+
+        function setPaletteEnabled(enabled) {
+            paletteEnabled = enabled;
+            $('paletteEnabledBtn').classList.toggle('active', enabled);
+            $('paletteEnabledBtn').querySelector('.iconify').dataset.icon = enabled ? 'mdi:checkbox-marked' : 'mdi:checkbox-blank-outline';
+        }
+
+        function setPaletteEyedropperMode(enabled) {
+            paletteEyedropperMode = enabled;
+            $('paletteEyedropperBtn').classList.toggle('active', enabled);
+            mainSvg.style.cursor = (enabled || eyedropperMode) ? 'crosshair' : 'default';
+        }
+
+        function renderPaletteGrid() {
+            const grid = $('paletteGrid');
+            grid.innerHTML = '';
+            paletteColors.forEach((color, i) => {
+                const swatch = document.createElement('div');
+                swatch.className = 'palette-swatch';
+                swatch.style.background = `rgb(${color.join(',')})`;
+                swatch.title = `RGB(${color.join(', ')}) - Click to edit`;
+
+                // Click to edit
+                swatch.addEventListener('click', e => {
+                    if (e.target.classList.contains('remove-btn')) return;
+                    paletteEditingIndex = i;
+                    $('paletteColorPicker').value = rgbToHex(color);
+                    $('paletteColorPicker').click();
+                });
+
+                // Remove button
+                const removeBtn = document.createElement('span');
+                removeBtn.className = 'remove-btn';
+                removeBtn.textContent = '×';
+                removeBtn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    pushUndo();
+                    paletteColors.splice(i, 1);
+                    renderPaletteGrid();
+                    update();
+                });
+                swatch.appendChild(removeBtn);
+
+                grid.appendChild(swatch);
+            });
+            $('paletteColorCount').textContent = paletteColors.length;
+        }
+
+        // Palette event handlers
+        $('paletteToggle').addEventListener('click', () => togglePalettePanel());
+        $('palettePanelClose').addEventListener('click', () => togglePalettePanel(false));
+
+        $('paletteEnabledBtn').addEventListener('click', () => {
+            pushUndo();
+            setPaletteEnabled(!paletteEnabled);
+            update();
+        });
+
+        $('addColorPickerBtn').addEventListener('click', () => {
+            paletteEditingIndex = -1;
+            $('paletteColorPicker').value = '#ff0000';
+            $('paletteColorPicker').click();
+        });
+
+        $('paletteColorPicker').addEventListener('change', e => {
+            pushUndo();
+            const color = hexToRgb(e.target.value);
+            if (paletteEditingIndex >= 0) {
+                paletteColors[paletteEditingIndex] = color;
+            } else {
+                paletteColors.push(color);
+            }
+            renderPaletteGrid();
+            update();
+        });
+
+        $('paletteEyedropperBtn').addEventListener('click', () => {
+            setPaletteEyedropperMode(!paletteEyedropperMode);
+            if (paletteEyedropperMode) setEyedropperMode(false); // Turn off chroma eyedropper
+        });
+
+        $('clearColorsBtn').addEventListener('click', () => {
+            if (paletteColors.length === 0) return;
+            pushUndo();
+            paletteColors = [];
+            renderPaletteGrid();
+            update();
+        });
+
         // State helpers - used by undo/redo and localStorage
         function getState() {
             return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value),
                 gridOpacity, sampleMode, aspectLocked, lockedAspectRatio, resolutionLocked, expandModeOn,
                 nMax: parseInt(nSlider.max), mMax: parseInt(mSlider.max),
-                chromaEnabled, chromaColor, chromaTolerance, tileMode, gridColor };
+                chromaEnabled, chromaColor, chromaTolerance, tileMode, gridColor,
+                paletteEnabled, paletteColors: paletteColors.map(c => [...c]) };
         }
 
         function applyState(s) {
@@ -700,6 +921,8 @@
             chromaTolerance = s.chromaTolerance ?? 30;
             tileMode = s.tileMode ?? (s.hexMode ? 'hex' : 'square'); // backwards compat
             gridColor = s.gridColor ?? [233, 69, 96];
+            paletteEnabled = s.paletteEnabled ?? false;
+            paletteColors = (s.paletteColors || []).map(c => [...c]);
 
             // Update UI
             updateGridColorSwatch();
@@ -712,6 +935,8 @@
             setChromaEnabled(chromaEnabled);
             $('chromaTolerance').value = chromaTolerance;
             $('chromaToleranceVal').textContent = chromaTolerance;
+            setPaletteEnabled(paletteEnabled);
+            renderPaletteGrid();
         }
 
         // Undo/redo
@@ -1071,7 +1296,7 @@
         mainSvg.addEventListener('mousedown', e => {
             const pos = getMousePos(e);
 
-            // Eyedropper mode - pick color from image
+            // Eyedropper mode - pick color from image (chroma key)
             if (eyedropperMode && image) {
                 const imgData = getImageData();
                 const px = Math.floor(pos.x), py = Math.floor(pos.y);
@@ -1083,6 +1308,21 @@
                     updateChromaSwatch();
                 }
                 setEyedropperMode(false);
+                update();
+                return;
+            }
+
+            // Palette eyedropper mode - add color from image
+            if (paletteEyedropperMode && image) {
+                const imgData = getImageData();
+                const px = Math.floor(pos.x), py = Math.floor(pos.y);
+                if (px >= 0 && px < image.width && py >= 0 && py < image.height) {
+                    pushUndo();
+                    const idx = (py * image.width + px) * 4;
+                    paletteColors.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                    renderPaletteGrid();
+                }
+                setPaletteEyedropperMode(false);
                 update();
                 return;
             }
@@ -1100,7 +1340,7 @@
 
         mainSvg.addEventListener('mousemove', e => {
             const pos = getMousePos(e);
-            mainSvg.style.cursor = eyedropperMode ? 'crosshair' : (CURSORS[getHitZone(pos)] || 'default');
+            mainSvg.style.cursor = (eyedropperMode || paletteEyedropperMode) ? 'crosshair' : (CURSORS[getHitZone(pos)] || 'default');
         });
 
         window.addEventListener('mousemove', e => {
@@ -1298,6 +1538,7 @@
             }
             else if (e.key.toLowerCase() === 'e') { $('eyedropperBtn').click(); }
             else if (e.key.toLowerCase() === 'c') { $('chromaToggle').click(); }
+            else if (e.key.toLowerCase() === 'p') { togglePalettePanel(); }
             else if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
             else if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
         });
