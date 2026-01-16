@@ -323,7 +323,7 @@
         let chromaColor = [0, 255, 0]; // RGB
         let chromaTolerance = 30;
         let eyedropperMode = false;
-        let tileMode = 'square'; // 'square', 'hex', 'hexV', 'tri'
+        let tileMode = 'square'; // 'square', 'hex', 'hexV', 'tri', 'triH'
         let gridColor = [233, 69, 96]; // RGB for #e94560
 
         // View transform state (pan/zoom for the whole canvas view)
@@ -373,13 +373,181 @@
             return `rgb(${color[0]|0},${color[1]|0},${color[2]|0})`;
         }
 
-        // Geometry formulas for each tile mode
-        const TILE_GEOMETRY = {
-            hex:    { wF: n => n * 0.75 + 0.25, hF: m => m + 0.5,        snapW: 0.75, snapH: 1 },
-            hexV:   { wF: n => n + 0.5,         hF: m => m * 0.75 + 0.25, snapW: 1,    snapH: 0.75 },
-            tri:    { wF: n => (n + 1) / 2,     hF: m => m,              snapW: 0.5,  snapH: 1 },
-            triH:   { wF: n => n,               hF: m => (m + 1) / 2,    snapW: 1,    snapH: 0.5 },
-            square: { wF: n => n,               hF: m => m,              snapW: 1,    snapH: 1 }
+        // Point-in-shape test functions (shared utilities)
+        function pointInHex(px, py, cx, cy, halfW, halfH) {
+            const dx = Math.abs(px - cx), dy = Math.abs(py - cy);
+            if (dx > halfW || dy > halfH) return false;
+            return halfH * halfW - halfH * dx - halfW * 0.5 * dy >= 0;
+        }
+        function pointInHexV(px, py, cx, cy, halfW, halfH) {
+            const dx = Math.abs(px - cx), dy = Math.abs(py - cy);
+            if (dx > halfW || dy > halfH) return false;
+            return halfW * halfH - halfW * dy - halfH * 0.5 * dx >= 0;
+        }
+        function pointInTriangle(px, py, x0, y0, x1, y1, x2, y2) {
+            const area = 0.5 * (-y1 * x2 + y0 * (-x1 + x2) + x0 * (y1 - y2) + x1 * y2);
+            const s = 1 / (2 * area) * (y0 * x2 - x0 * y2 + (y2 - y0) * px + (x0 - x2) * py);
+            const t = 1 / (2 * area) * (x0 * y1 - y0 * x1 + (y0 - y1) * px + (x1 - x0) * py);
+            return s >= 0 && t >= 0 && (1 - s - t) >= 0;
+        }
+
+        // Unified shape definitions - each shape defines its geometry, tile generation, and sampling
+        const SHAPES = {
+            square: {
+                type: 'rect',
+                wF: n => n, hF: m => m, snapW: 1, snapH: 1,
+                getGeometry: (n, m, w, h) => ({ cellW: w / n, cellH: h / m }),
+                getTile: (col, row, g, ox, oy) => {
+                    const x = ox + col * g.cellW, y = oy + row * g.cellH;
+                    return { x, y, width: g.cellW, height: g.cellH, cx: x + g.cellW / 2, cy: y + g.cellH / 2 };
+                },
+                sample: (imgData, t, w, h) => {
+                    if (sampleMode === 'center') {
+                        const idx = (Math.floor(t.cy) * w + Math.floor(t.cx)) * 4;
+                        return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
+                    }
+                    const x0 = Math.max(0, Math.floor(t.x)), y0 = Math.max(0, Math.floor(t.y));
+                    const x1 = Math.min(w, Math.floor(t.x + t.width)), y1 = Math.min(h, Math.floor(t.y + t.height));
+                    const pixels = [];
+                    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                        const idx = (y * w + x) * 4;
+                        pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                    }
+                    return aggregatePixels(pixels);
+                },
+                setAttrs: (el, t) => { el.setAttribute('x', t.x); el.setAttribute('y', t.y); el.setAttribute('width', t.width); el.setAttribute('height', t.height); },
+                svgTag: (t, sx, sy) => `<rect x="${(t.x * sx).toFixed(2)}" y="${(t.y * sy).toFixed(2)}" width="${(t.width * sx).toFixed(2)}" height="${(t.height * sy).toFixed(2)}"`
+            },
+            hex: {
+                type: 'polygon',
+                wF: n => n * 0.75 + 0.25, hF: m => m + 0.5, snapW: 0.75, snapH: 1,
+                getGeometry: (n, m, w, h) => {
+                    const hexW = w / (n * 0.75 + 0.25), hexH = h / (m + 0.5);
+                    return { hexW, hexH, halfW: hexW / 2, halfH: hexH / 2 };
+                },
+                getTile: (col, row, g, ox, oy) => {
+                    const cx = ox + col * g.hexW * 0.75 + g.halfW;
+                    const cy = oy + row * g.hexH + (col % 2 === 1 ? g.halfH : 0) + g.halfH;
+                    return { cx, cy, halfW: g.halfW, halfH: g.halfH,
+                        points: `${cx + g.halfW},${cy} ${cx + g.halfW * 0.5},${cy - g.halfH} ${cx - g.halfW * 0.5},${cy - g.halfH} ${cx - g.halfW},${cy} ${cx - g.halfW * 0.5},${cy + g.halfH} ${cx + g.halfW * 0.5},${cy + g.halfH}` };
+                },
+                sample: (imgData, t, w, h) => {
+                    if (sampleMode === 'center') {
+                        const idx = (Math.floor(t.cy) * w + Math.floor(t.cx)) * 4;
+                        return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
+                    }
+                    const x0 = Math.max(0, Math.floor(t.cx - t.halfW)), y0 = Math.max(0, Math.floor(t.cy - t.halfH));
+                    const x1 = Math.min(w, Math.ceil(t.cx + t.halfW)), y1 = Math.min(h, Math.ceil(t.cy + t.halfH));
+                    const pixels = [];
+                    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                        if (pointInHex(x + 0.5, y + 0.5, t.cx, t.cy, t.halfW, t.halfH)) {
+                            const idx = (y * w + x) * 4;
+                            pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                        }
+                    }
+                    return aggregatePixels(pixels);
+                },
+                setAttrs: (el, t) => el.setAttribute('points', t.points),
+                svgTag: (t, sx, sy, ox, oy) => {
+                    const cx = t.cx - ox, cy = t.cy - oy;
+                    const pts = [[cx + t.halfW, cy], [cx + t.halfW * 0.5, cy - t.halfH], [cx - t.halfW * 0.5, cy - t.halfH], [cx - t.halfW, cy], [cx - t.halfW * 0.5, cy + t.halfH], [cx + t.halfW * 0.5, cy + t.halfH]];
+                    return `<polygon points="${pts.map(([x, y]) => `${(x * sx).toFixed(2)},${(y * sy).toFixed(2)}`).join(' ')}"`;
+                }
+            },
+            hexV: {
+                type: 'polygon',
+                wF: n => n + 0.5, hF: m => m * 0.75 + 0.25, snapW: 1, snapH: 0.75,
+                getGeometry: (n, m, w, h) => {
+                    const hexW = w / (n + 0.5), hexH = h / (m * 0.75 + 0.25);
+                    return { hexW, hexH, halfW: hexW / 2, halfH: hexH / 2 };
+                },
+                getTile: (col, row, g, ox, oy) => {
+                    const cx = ox + col * g.hexW + (row % 2 === 1 ? g.halfW : 0) + g.halfW;
+                    const cy = oy + row * g.hexH * 0.75 + g.halfH;
+                    return { cx, cy, halfW: g.halfW, halfH: g.halfH,
+                        points: `${cx},${cy - g.halfH} ${cx + g.halfW},${cy - g.halfH * 0.5} ${cx + g.halfW},${cy + g.halfH * 0.5} ${cx},${cy + g.halfH} ${cx - g.halfW},${cy + g.halfH * 0.5} ${cx - g.halfW},${cy - g.halfH * 0.5}` };
+                },
+                sample: (imgData, t, w, h) => {
+                    if (sampleMode === 'center') {
+                        const idx = (Math.floor(t.cy) * w + Math.floor(t.cx)) * 4;
+                        return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
+                    }
+                    const x0 = Math.max(0, Math.floor(t.cx - t.halfW)), y0 = Math.max(0, Math.floor(t.cy - t.halfH));
+                    const x1 = Math.min(w, Math.ceil(t.cx + t.halfW)), y1 = Math.min(h, Math.ceil(t.cy + t.halfH));
+                    const pixels = [];
+                    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                        if (pointInHexV(x + 0.5, y + 0.5, t.cx, t.cy, t.halfW, t.halfH)) {
+                            const idx = (y * w + x) * 4;
+                            pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                        }
+                    }
+                    return aggregatePixels(pixels);
+                },
+                setAttrs: (el, t) => el.setAttribute('points', t.points),
+                svgTag: (t, sx, sy, ox, oy) => {
+                    const cx = t.cx - ox, cy = t.cy - oy;
+                    const pts = [[cx, cy - t.halfH], [cx + t.halfW, cy - t.halfH * 0.5], [cx + t.halfW, cy + t.halfH * 0.5], [cx, cy + t.halfH], [cx - t.halfW, cy + t.halfH * 0.5], [cx - t.halfW, cy - t.halfH * 0.5]];
+                    return `<polygon points="${pts.map(([x, y]) => `${(x * sx).toFixed(2)},${(y * sy).toFixed(2)}`).join(' ')}"`;
+                }
+            },
+            tri: {
+                type: 'polygon',
+                wF: n => (n + 1) / 2, hF: m => m, snapW: 0.5, snapH: 1,
+                getGeometry: (n, m, w, h) => ({ triW: w / ((n + 1) / 2), triH: h / m }),
+                getTile: (col, row, g, ox, oy) => {
+                    const isUp = (col + row) % 2 === 0;
+                    const baseX = ox + col * g.triW / 2, baseY = oy + row * g.triH;
+                    if (isUp) return { x0: baseX + g.triW / 2, y0: baseY, x1: baseX, y1: baseY + g.triH, x2: baseX + g.triW, y2: baseY + g.triH, cx: baseX + g.triW / 2, cy: baseY + g.triH * 2 / 3 };
+                    return { x0: baseX, y0: baseY, x1: baseX + g.triW, y1: baseY, x2: baseX + g.triW / 2, y2: baseY + g.triH, cx: baseX + g.triW / 2, cy: baseY + g.triH / 3 };
+                },
+                sample: (imgData, t, w, h) => {
+                    if (sampleMode === 'center') {
+                        const idx = (Math.floor(t.cy) * w + Math.floor(t.cx)) * 4;
+                        return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
+                    }
+                    const minX = Math.max(0, Math.floor(Math.min(t.x0, t.x1, t.x2))), maxX = Math.min(w, Math.ceil(Math.max(t.x0, t.x1, t.x2)));
+                    const minY = Math.max(0, Math.floor(Math.min(t.y0, t.y1, t.y2))), maxY = Math.min(h, Math.ceil(Math.max(t.y0, t.y1, t.y2)));
+                    const pixels = [];
+                    for (let y = minY; y < maxY; y++) for (let x = minX; x < maxX; x++) {
+                        if (pointInTriangle(x + 0.5, y + 0.5, t.x0, t.y0, t.x1, t.y1, t.x2, t.y2)) {
+                            const idx = (y * w + x) * 4;
+                            pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                        }
+                    }
+                    return aggregatePixels(pixels);
+                },
+                setAttrs: (el, t) => el.setAttribute('points', `${t.x0},${t.y0} ${t.x1},${t.y1} ${t.x2},${t.y2}`),
+                svgTag: (t, sx, sy, ox, oy) => `<polygon points="${[(t.x0-ox)*sx,(t.y0-oy)*sy,(t.x1-ox)*sx,(t.y1-oy)*sy,(t.x2-ox)*sx,(t.y2-oy)*sy].map(v=>v.toFixed(2)).join(',')}"`
+            },
+            triH: {
+                type: 'polygon',
+                wF: n => n, hF: m => (m + 1) / 2, snapW: 1, snapH: 0.5,
+                getGeometry: (n, m, w, h) => ({ triW: w / n, triH: h / ((m + 1) / 2) }),
+                getTile: (col, row, g, ox, oy) => {
+                    const cellRow = Math.floor(row / 2), isRight = row % 2 === 1;
+                    const baseX = ox + col * g.triW, baseY = oy + cellRow * g.triH;
+                    if (isRight) return { x0: baseX, y0: baseY, x1: baseX, y1: baseY + g.triH, x2: baseX + g.triW, y2: baseY + g.triH / 2, cx: baseX + g.triW / 3, cy: baseY + g.triH / 2 };
+                    return { x0: baseX + g.triW, y0: baseY, x1: baseX + g.triW, y1: baseY + g.triH, x2: baseX, y2: baseY + g.triH / 2, cx: baseX + g.triW * 2 / 3, cy: baseY + g.triH / 2 };
+                },
+                sample: (imgData, t, w, h) => {
+                    if (sampleMode === 'center') {
+                        const idx = (Math.floor(t.cy) * w + Math.floor(t.cx)) * 4;
+                        return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
+                    }
+                    const minX = Math.max(0, Math.floor(Math.min(t.x0, t.x1, t.x2))), maxX = Math.min(w, Math.ceil(Math.max(t.x0, t.x1, t.x2)));
+                    const minY = Math.max(0, Math.floor(Math.min(t.y0, t.y1, t.y2))), maxY = Math.min(h, Math.ceil(Math.max(t.y0, t.y1, t.y2)));
+                    const pixels = [];
+                    for (let y = minY; y < maxY; y++) for (let x = minX; x < maxX; x++) {
+                        if (pointInTriangle(x + 0.5, y + 0.5, t.x0, t.y0, t.x1, t.y1, t.x2, t.y2)) {
+                            const idx = (y * w + x) * 4;
+                            pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                        }
+                    }
+                    return aggregatePixels(pixels);
+                },
+                setAttrs: (el, t) => el.setAttribute('points', `${t.x0},${t.y0} ${t.x1},${t.y1} ${t.x2},${t.y2}`),
+                svgTag: (t, sx, sy, ox, oy) => `<polygon points="${[(t.x0-ox)*sx,(t.y0-oy)*sy,(t.x1-ox)*sx,(t.y1-oy)*sy,(t.x2-ox)*sx,(t.y2-oy)*sy].map(v=>v.toFixed(2)).join(',')}"`
+            }
         };
 
         // Lock icon SVG paths (moved up for setLockState)
@@ -627,50 +795,25 @@
             link.click();
         });
 
-        // Save SVG - preserves exact tile geometry
+        // Save SVG - preserves exact tile geometry (uses generic SHAPES)
         $('saveSvgBtn').addEventListener('click', () => {
             if (!image) return;
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
             const imgData = getImageData();
             const svgW = 800, svgH = 800 * (rect.height / rect.width);
             const scaleX = svgW / rect.width, scaleY = svgH / rect.height;
-            let paths = '';
-            const scalePts = pts => pts.map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
 
-            if (tileMode === 'hex') {
-                const { hexW, hexH, halfW, halfH } = getHexGeometry(n, m, rect.width, rect.height);
-                for (let col = 0; col < n; col++) for (let row = 0; row < m; row++) {
-                    const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, 0, 0);
-                    const fill = colorToFill(sampleHexCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, image.width, image.height));
-                    if (fill) paths += `<polygon points="${scalePts([[cx + halfW, cy], [cx + halfW * 0.5, cy - halfH], [cx - halfW * 0.5, cy - halfH], [cx - halfW, cy], [cx - halfW * 0.5, cy + halfH], [cx + halfW * 0.5, cy + halfH]])}" fill="${fill}"/>\n`;
-                }
-            } else if (tileMode === 'hexV') {
-                const { hexW, hexH, halfW, halfH } = getHexVGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, 0, 0);
-                    const fill = colorToFill(sampleHexVCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, image.width, image.height));
-                    if (fill) paths += `<polygon points="${scalePts([[cx, cy - halfH], [cx + halfW, cy - halfH * 0.5], [cx + halfW, cy + halfH * 0.5], [cx, cy + halfH], [cx - halfW, cy + halfH * 0.5], [cx - halfW, cy - halfH * 0.5]])}" fill="${fill}"/>\n`;
-                }
-            } else if (tileMode === 'tri') {
-                const { triW, triH } = getTriGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const tri = getTriVertices(col, row, triW, triH, 0, 0);
-                    const fill = colorToFill(sampleTriCell(imgData, { ...tri, cx: rect.x + tri.cx, cy: rect.y + tri.cy, x0: rect.x + tri.x0, y0: rect.y + tri.y0, x1: rect.x + tri.x1, y1: rect.y + tri.y1, x2: rect.x + tri.x2, y2: rect.y + tri.y2 }, image.width, image.height));
-                    if (fill) paths += `<polygon points="${scalePts([[tri.x0, tri.y0], [tri.x1, tri.y1], [tri.x2, tri.y2]])}" fill="${fill}"/>\n`;
-                }
-            } else if (tileMode === 'triH') {
-                const { triW, triH } = getTriHGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const tri = getTriHVertices(col, row, triW, triH, 0, 0);
-                    const fill = colorToFill(sampleTriHCell(imgData, { ...tri, cx: rect.x + tri.cx, cy: rect.y + tri.cy, x0: rect.x + tri.x0, y0: rect.y + tri.y0, x1: rect.x + tri.x1, y1: rect.y + tri.y1, x2: rect.x + tri.x2, y2: rect.y + tri.y2 }, image.width, image.height));
-                    if (fill) paths += `<polygon points="${scalePts([[tri.x0, tri.y0], [tri.x1, tri.y1], [tri.x2, tri.y2]])}" fill="${fill}"/>\n`;
-                }
-            } else {
-                const cellW = rect.width / n, cellH = rect.height / m;
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const fill = colorToFill(sampleCell(imgData, rect.x + col * cellW, rect.y + row * cellH, rect.x + (col + 1) * cellW, rect.y + (row + 1) * cellH, image.width));
-                    if (fill) paths += `<rect x="${(col * cellW * scaleX).toFixed(2)}" y="${(row * cellH * scaleY).toFixed(2)}" width="${(cellW * scaleX).toFixed(2)}" height="${(cellH * scaleY).toFixed(2)}" fill="${fill}"/>\n`;
-                }
+            const shape = SHAPES[tileMode];
+            const geom = shape.getGeometry(n, m, rect.width, rect.height);
+            let paths = '';
+
+            for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                // Get tile at origin (0,0) for SVG output coords
+                const tileLocal = shape.getTile(col, row, geom, 0, 0);
+                // Get tile at actual rect position for sampling
+                const tileSample = shape.getTile(col, row, geom, rect.x, rect.y);
+                const fill = colorToFill(shape.sample(imgData, tileSample, image.width, image.height));
+                if (fill) paths += shape.svgTag(tileLocal, scaleX, scaleY, 0, 0) + ` fill="${fill}"/>\n`;
             }
 
             const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${svgW.toFixed(0)}" height="${svgH.toFixed(0)}" viewBox="0 0 ${svgW.toFixed(0)} ${svgH.toFixed(0)}">\n${paths}</svg>`;
@@ -759,198 +902,6 @@
             });
         }
 
-        // Hexagon helper functions - stretched to fit grid
-        function getHexGeometry(n, m, rectW, rectH) {
-            // Calculate hex dimensions to perfectly tile the rect
-            // Flat-top hex: horizontal spacing = 1.5 * hexW, vertical spacing = hexH (with 0.5 offset for odd cols)
-            const hexW = rectW / (n * 0.75 + 0.25);
-            const hexH = rectH / (m + 0.5);
-            return { hexW, hexH, halfW: hexW / 2, halfH: hexH / 2 };
-        }
-
-        function getHexCenter(col, row, hexW, hexH, offsetX, offsetY) {
-            // Flat-top hexagon layout (offset odd columns)
-            const x = offsetX + col * hexW * 0.75 + hexW / 2;
-            const y = offsetY + row * hexH + (col % 2 === 1 ? hexH / 2 : 0) + hexH / 2;
-            return { x, y };
-        }
-
-        function pointInHex(px, py, cx, cy, halfW, halfH) {
-            // Check if point is inside stretched hexagon
-            const dx = Math.abs(px - cx), dy = Math.abs(py - cy);
-            if (dx > halfW || dy > halfH) return false;
-            // Check against slanted edges: the hex edge goes from (halfW, 0) to (halfW/2, halfH)
-            return halfH * halfW - halfH * dx - halfW * 0.5 * dy >= 0;
-        }
-
-        function sampleHexCell(imgData, cx, cy, halfW, halfH, width, height) {
-            if (sampleMode === 'center') {
-                const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
-                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
-            }
-            const x0 = Math.max(0, Math.floor(cx - halfW)), y0 = Math.max(0, Math.floor(cy - halfH));
-            const x1 = Math.min(width, Math.ceil(cx + halfW)), y1 = Math.min(height, Math.ceil(cy + halfH));
-            const pixels = [];
-            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-                if (pointInHex(x + 0.5, y + 0.5, cx, cy, halfW, halfH)) {
-                    const idx = (y * width + x) * 4;
-                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
-                }
-            }
-            return aggregatePixels(pixels);
-        }
-
-        // Pointy-top hexagon helpers
-        function getHexVGeometry(n, m, rectW, rectH) {
-            // Pointy-top hex: vertical spacing = 1.5 * hexH, horizontal spacing = hexW (with 0.5 offset for odd rows)
-            const hexW = rectW / (n + 0.5);
-            const hexH = rectH / (m * 0.75 + 0.25);
-            return { hexW, hexH, halfW: hexW / 2, halfH: hexH / 2 };
-        }
-
-        function getHexVCenter(col, row, hexW, hexH, offsetX, offsetY) {
-            // Pointy-top hexagon layout (offset odd rows)
-            const x = offsetX + col * hexW + (row % 2 === 1 ? hexW / 2 : 0) + hexW / 2;
-            const y = offsetY + row * hexH * 0.75 + hexH / 2;
-            return { x, y };
-        }
-
-        function pointInHexV(px, py, cx, cy, halfW, halfH) {
-            // Check if point is inside stretched pointy-top hexagon
-            const dx = Math.abs(px - cx), dy = Math.abs(py - cy);
-            if (dx > halfW || dy > halfH) return false;
-            // Check against slanted edges: the hex edge goes from (0, halfH) to (halfW, halfH/2)
-            return halfW * halfH - halfW * dy - halfH * 0.5 * dx >= 0;
-        }
-
-        function sampleHexVCell(imgData, cx, cy, halfW, halfH, width, height) {
-            if (sampleMode === 'center') {
-                const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
-                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
-            }
-            const x0 = Math.max(0, Math.floor(cx - halfW)), y0 = Math.max(0, Math.floor(cy - halfH));
-            const x1 = Math.min(width, Math.ceil(cx + halfW)), y1 = Math.min(height, Math.ceil(cy + halfH));
-            const pixels = [];
-            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-                if (pointInHexV(x + 0.5, y + 0.5, cx, cy, halfW, halfH)) {
-                    const idx = (y * width + x) * 4;
-                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
-                }
-            }
-            return aggregatePixels(pixels);
-        }
-
-        // Triangle helper functions
-        function getTriGeometry(n, m, rectW, rectH) {
-            // n = columns of triangles (alternating up/down), m = rows
-            // Each pair of triangles (up+down) spans one "cell width"
-            const triW = rectW / ((n + 1) / 2);
-            const triH = rectH / m;
-            return { triW, triH };
-        }
-
-        function getTriVertices(col, row, triW, triH, offsetX, offsetY) {
-            // Alternating up/down triangles that perfectly tessellate
-            const isUp = (col + row) % 2 === 0;
-            const baseX = offsetX + col * triW / 2;
-            const baseY = offsetY + row * triH;
-
-            if (isUp) {
-                // Point at top
-                return {
-                    x0: baseX + triW / 2, y0: baseY,
-                    x1: baseX, y1: baseY + triH,
-                    x2: baseX + triW, y2: baseY + triH,
-                    cx: baseX + triW / 2, cy: baseY + triH * 2 / 3
-                };
-            } else {
-                // Point at bottom
-                return {
-                    x0: baseX, y0: baseY,
-                    x1: baseX + triW, y1: baseY,
-                    x2: baseX + triW / 2, y2: baseY + triH,
-                    cx: baseX + triW / 2, cy: baseY + triH / 3
-                };
-            }
-        }
-
-        function pointInTriangle(px, py, x0, y0, x1, y1, x2, y2) {
-            const area = 0.5 * (-y1 * x2 + y0 * (-x1 + x2) + x0 * (y1 - y2) + x1 * y2);
-            const s = 1 / (2 * area) * (y0 * x2 - x0 * y2 + (y2 - y0) * px + (x0 - x2) * py);
-            const t = 1 / (2 * area) * (x0 * y1 - y0 * x1 + (y0 - y1) * px + (x1 - x0) * py);
-            return s >= 0 && t >= 0 && (1 - s - t) >= 0;
-        }
-
-        function sampleTriCell(imgData, tri, width, height) {
-            const { x0, y0, x1, y1, x2, y2, cx, cy } = tri;
-            if (sampleMode === 'center') {
-                const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
-                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
-            }
-            const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2))), maxX = Math.min(width, Math.ceil(Math.max(x0, x1, x2)));
-            const minY = Math.max(0, Math.floor(Math.min(y0, y1, y2))), maxY = Math.min(height, Math.ceil(Math.max(y0, y1, y2)));
-            const pixels = [];
-            for (let y = minY; y < maxY; y++) for (let x = minX; x < maxX; x++) {
-                if (pointInTriangle(x + 0.5, y + 0.5, x0, y0, x1, y1, x2, y2)) {
-                    const idx = (y * width + x) * 4;
-                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
-                }
-            }
-            return aggregatePixels(pixels);
-        }
-
-        // Horizontal equilateral triangles (rotated 90° from vertical tri)
-        function getTriHGeometry(n, m, rectW, rectH) {
-            // n = columns, m = triangles per column (alternating left/right pointing)
-            const triW = rectW / n;
-            const triH = rectH / ((m + 1) / 2);
-            return { triW, triH };
-        }
-
-        function getTriHVertices(col, row, triW, triH, offsetX, offsetY) {
-            // Horizontal triangles: alternating left-pointing and right-pointing
-            const cellRow = Math.floor(row / 2);
-            const isRight = row % 2 === 1;  // odd rows point right
-            const baseY = offsetY + cellRow * triH;
-            const baseX = offsetX + col * triW;
-
-            if (isRight) {
-                // Right-pointing: left edge vertical, point on right
-                return {
-                    x0: baseX, y0: baseY,
-                    x1: baseX, y1: baseY + triH,
-                    x2: baseX + triW, y2: baseY + triH / 2,
-                    cx: baseX + triW / 3, cy: baseY + triH / 2
-                };
-            } else {
-                // Left-pointing: right edge vertical, point on left
-                return {
-                    x0: baseX + triW, y0: baseY,
-                    x1: baseX + triW, y1: baseY + triH,
-                    x2: baseX, y2: baseY + triH / 2,
-                    cx: baseX + triW * 2/3, cy: baseY + triH / 2
-                };
-            }
-        }
-
-        function sampleTriHCell(imgData, tri, width, height) {
-            const { x0, y0, x1, y1, x2, y2, cx, cy } = tri;
-            if (sampleMode === 'center') {
-                const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
-                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
-            }
-            const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2))), maxX = Math.min(width, Math.ceil(Math.max(x0, x1, x2)));
-            const minY = Math.max(0, Math.floor(Math.min(y0, y1, y2))), maxY = Math.min(height, Math.ceil(Math.max(y0, y1, y2)));
-            const pixels = [];
-            for (let y = minY; y < maxY; y++) for (let x = minX; x < maxX; x++) {
-                if (pointInTriangle(x + 0.5, y + 0.5, x0, y0, x1, y1, x2, y2)) {
-                    const idx = (y * width + x) * 4;
-                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
-                }
-            }
-            return aggregatePixels(pixels);
-        }
-
         // Cache image data to avoid recreating every frame
         let cachedImgData = null;
         let cachedImgDataSrc = null;
@@ -1022,18 +973,16 @@
                 svgElements.image.setAttribute('height', image.height);
             }
 
+            // Get shape config
+            const shape = SHAPES[tileMode];
+
             // Check if tiles need rebuild (structure changed)
             const tileKey = `${n},${m},${tileMode}`;
-            const structureChanged = tileKey !== lastTileKey;
-
-            if (structureChanged) {
-                // Rebuild tile elements
+            if (tileKey !== lastTileKey) {
                 const ns = 'http://www.w3.org/2000/svg';
                 svgElements.tiles.innerHTML = '';
-                const totalTiles = n * m;
-                const isSquare = tileMode === 'square';
-                for (let i = 0; i < totalTiles; i++) {
-                    const el = document.createElementNS(ns, isSquare ? 'rect' : 'polygon');
+                for (let i = 0; i < n * m; i++) {
+                    const el = document.createElementNS(ns, shape.type);
                     el.setAttribute('vector-effect', 'non-scaling-stroke');
                     el.setAttribute('stroke-width', '1');
                     svgElements.tiles.appendChild(el);
@@ -1041,66 +990,22 @@
                 lastTileKey = tileKey;
             }
 
-            // Update tile attributes
+            // Update tiles using generic shape handling
             const tiles = svgElements.tiles.children;
-            const cellW = rect.width / n, cellH = rect.height / m;
-
-            function sampleCenter(cx, cy) {
-                const px = Math.floor(cx), py = Math.floor(cy);
-                if (px < 0 || px >= image.width || py < 0 || py >= image.height) return null;
-                const idx = (py * image.width + px) * 4;
-                return [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
-            }
-
-            function setTileStyle(el, fill) {
-                el.setAttribute('fill', fill || 'none');
+            const geom = shape.getGeometry(n, m, rect.width, rect.height);
+            let idx = 0;
+            for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                const tile = shape.getTile(col, row, geom, rect.x, rect.y);
+                const el = tiles[idx++];
+                shape.setAttrs(el, tile);
+                const color = fastMode ?
+                    (() => { const px = Math.floor(tile.cx), py = Math.floor(tile.cy);
+                        return (px >= 0 && px < image.width && py >= 0 && py < image.height) ?
+                            [imgData.data[(py * image.width + px) * 4], imgData.data[(py * image.width + px) * 4 + 1], imgData.data[(py * image.width + px) * 4 + 2]] : null; })() :
+                    shape.sample(imgData, tile, image.width, image.height);
+                el.setAttribute('fill', colorToFill(color, 'transparent') || 'none');
                 el.setAttribute('fill-opacity', gridOpacity);
                 el.setAttribute('stroke', gridColorRgba);
-            }
-
-            let idx = 0;
-            if (tileMode === 'hex') {
-                const { hexW, hexH, halfW, halfH } = getHexGeometry(n, m, rect.width, rect.height);
-                for (let col = 0; col < n; col++) for (let row = 0; row < m; row++) {
-                    const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, rect.x, rect.y);
-                    const el = tiles[idx++];
-                    el.setAttribute('points', `${cx + halfW},${cy} ${cx + halfW * 0.5},${cy - halfH} ${cx - halfW * 0.5},${cy - halfH} ${cx - halfW},${cy} ${cx - halfW * 0.5},${cy + halfH} ${cx + halfW * 0.5},${cy + halfH}`);
-                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(cx, cy) : sampleHexCell(imgData, cx, cy, halfW, halfH, image.width, image.height), 'transparent'));
-                }
-            } else if (tileMode === 'hexV') {
-                const { hexW, hexH, halfW, halfH } = getHexVGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, rect.x, rect.y);
-                    const el = tiles[idx++];
-                    el.setAttribute('points', `${cx},${cy - halfH} ${cx + halfW},${cy - halfH * 0.5} ${cx + halfW},${cy + halfH * 0.5} ${cx},${cy + halfH} ${cx - halfW},${cy + halfH * 0.5} ${cx - halfW},${cy - halfH * 0.5}`);
-                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(cx, cy) : sampleHexVCell(imgData, cx, cy, halfW, halfH, image.width, image.height), 'transparent'));
-                }
-            } else if (tileMode === 'tri') {
-                const { triW, triH } = getTriGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const tri = getTriVertices(col, row, triW, triH, rect.x, rect.y);
-                    const el = tiles[idx++];
-                    el.setAttribute('points', `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`);
-                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(tri.cx, tri.cy) : sampleTriCell(imgData, tri, image.width, image.height), 'transparent'));
-                }
-            } else if (tileMode === 'triH') {
-                const { triW, triH } = getTriHGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const tri = getTriHVertices(col, row, triW, triH, rect.x, rect.y);
-                    const el = tiles[idx++];
-                    el.setAttribute('points', `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`);
-                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(tri.cx, tri.cy) : sampleTriHCell(imgData, tri, image.width, image.height), 'transparent'));
-                }
-            } else {
-                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                    const x = rect.x + col * cellW, y = rect.y + row * cellH;
-                    const el = tiles[idx++];
-                    el.setAttribute('x', x);
-                    el.setAttribute('y', y);
-                    el.setAttribute('width', cellW);
-                    el.setAttribute('height', cellH);
-                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(x + cellW / 2, y + cellH / 2) : sampleCell(imgData, x, y, x + cellW, y + cellH, image.width), 'transparent'));
-                }
             }
 
             // Update border
@@ -1232,14 +1137,14 @@
 
         // Get snap units for each tile mode - how much to move per tile add/remove
         function getTileSnapUnits(n, m, w, h) {
-            const g = TILE_GEOMETRY[tileMode];
+            const g = SHAPES[tileMode];
             const cellW = w / g.wF(n), cellH = h / g.hF(m);
             return { dx: cellW * g.snapW, dy: cellH * g.snapH };
         }
 
         // Calculate new rect dimensions when adding/removing tiles
         function calcExpandedRect(newN, newM, anchorX, anchorY) {
-            const g = TILE_GEOMETRY[tileMode];
+            const g = SHAPES[tileMode];
             const cellW = rectStart.width / g.wF(nStart), cellH = rectStart.height / g.hF(mStart);
             const newW = cellW * g.wF(newN), newH = cellH * g.hF(newM);
             return {
