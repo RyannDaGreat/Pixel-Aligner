@@ -31,8 +31,13 @@
             flex-direction: column;
         }
         .controls {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 50;
             padding: 12px 20px;
-            background: var(--glass-bg);
+            background: rgba(11, 13, 20, 0.8);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
             display: flex;
@@ -40,7 +45,7 @@
             align-items: center;
             flex-wrap: wrap;
             border-bottom: 1px solid var(--glass-border);
-            box-shadow: var(--shadow-deep), inset 0 1px 0 var(--glass-highlight);
+            box-shadow: var(--shadow-deep);
         }
         .control-group {
             display: flex;
@@ -163,8 +168,8 @@
             box-shadow: 0 0 8px var(--accent-glow);
         }
         .canvas-container {
-            flex: 1;
-            position: relative;
+            position: fixed;
+            inset: 0;
             overflow: hidden;
             background: radial-gradient(ellipse at center, rgba(30, 30, 50, 0.5) 0%, transparent 70%);
         }
@@ -1570,13 +1575,19 @@
             if (dys) { rect.height = newRect.height; rect.y = newRect.y; mSlider.value = mInput.value = newM; }
         }
 
+        // Normalize rect so width/height are always positive (flip x/y as needed)
+        function normalizeRect() {
+            if (rect.width < 0) { rect.x += rect.width; rect.width = -rect.width; }
+            if (rect.height < 0) { rect.y += rect.height; rect.height = -rect.height; }
+        }
+
         function handleAspectResize(dx, dy) {
             const sf = Math.max(Math.abs(dx) / rectStart.width, Math.abs(dy) / rectStart.height);
 
             if (['br', 'tl', 'tr', 'bl'].includes(dragging)) {
                 const signs = { br: dx + dy, tl: -(dx + dy), tr: dx - dy, bl: -dx + dy };
                 const sign = signs[dragging] > 0 ? 1 : -1;
-                const newW = Math.max(MIN_RECT_SIZE, rectStart.width * (1 + sign * sf));
+                const newW = rectStart.width * (1 + sign * sf);
                 const newH = newW / lockedAspectRatio;
                 rect.width = newW; rect.height = newH;
                 if (dragging[0] === 't') rect.y = rectStart.y + rectStart.height - newH;
@@ -1588,21 +1599,20 @@
                 const fromStart = dragging === 'left' || dragging === 'top';
 
                 if (isHoriz) {
-                    const newW = Math.max(MIN_RECT_SIZE, rectStart.width + (fromStart ? -delta : delta));
+                    const newW = rectStart.width + (fromStart ? -delta : delta);
                     const newH = newW / lockedAspectRatio;
                     const centerY = rectStart.y + rectStart.height / 2;
                     rect.width = newW; rect.height = newH; rect.y = centerY - newH / 2;
                     if (fromStart) rect.x = rectStart.x + rectStart.width - newW;
                 } else {
-                    // Vertical edge - anchor top for bottom, anchor bottom for top
-                    const newH = Math.max(MIN_RECT_SIZE, rectStart.height + (fromStart ? -delta : delta));
+                    const newH = rectStart.height + (fromStart ? -delta : delta);
                     const newW = newH * lockedAspectRatio;
                     const centerX = rectStart.x + rectStart.width / 2;
                     rect.width = newW; rect.height = newH; rect.x = centerX - newW / 2;
                     if (fromStart) rect.y = rectStart.y + rectStart.height - newH;
-                    // else: rect.y stays at rectStart.y (anchor top edge)
                 }
             }
+            normalizeRect();
         }
 
         function handleFreeResize(dx, dy) {
@@ -1613,10 +1623,11 @@
             const isTop = dragging === 'top' || dragging === 'tl' || dragging === 'tr';
             const isBottom = dragging === 'bottom' || dragging === 'bl' || dragging === 'br';
 
-            if (isRight) rect.width = Math.max(MIN_RECT_SIZE, rectStart.width + dx);
-            if (isBottom) rect.height = Math.max(MIN_RECT_SIZE, rectStart.height + dy);
-            if (isLeft) { const nw = Math.max(MIN_RECT_SIZE, rectStart.width - dx); rect.x = rectStart.x + rectStart.width - nw; rect.width = nw; }
-            if (isTop) { const nh = Math.max(MIN_RECT_SIZE, rectStart.height - dy); rect.y = rectStart.y + rectStart.height - nh; rect.height = nh; }
+            if (isRight) rect.width = rectStart.width + dx;
+            if (isBottom) rect.height = rectStart.height + dy;
+            if (isLeft) { rect.width = rectStart.width - dx; rect.x = rectStart.x + dx; }
+            if (isTop) { rect.height = rectStart.height - dy; rect.y = rectStart.y + dy; }
+            normalizeRect();
         }
 
         window.addEventListener('mouseup', () => { if (dragging) autoSave(); dragging = null; });
