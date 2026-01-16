@@ -1072,7 +1072,6 @@ return medianColor(pixels);
             const fastMode = dragging !== null;
             const gridColorRgba = `rgba(${gridColor.join(',')},0.5)`;
             const gridColorRgb = `rgb(${gridColor.join(',')})`;
-            const hs = getHandleSizeImg();
 
             // Update image
             if (svgElements.image.getAttribute('href') !== imageSrc) {
@@ -1177,13 +1176,14 @@ return medianColor(pixels);
             svgElements.border.setAttribute('height', rect.height);
             svgElements.border.setAttribute('stroke', gridColorRgb);
 
-            // Update handles
+            // Update handles (size compensates for zoom so they appear constant on screen)
+            const hsZoom = getHandleSizeHit();
             [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy], i) => {
                 const h = svgElements.handles[i];
-                h.setAttribute('x', rect.x + cx * rect.width - hs / 2);
-                h.setAttribute('y', rect.y + cy * rect.height - hs / 2);
-                h.setAttribute('width', hs);
-                h.setAttribute('height', hs);
+                h.setAttribute('x', rect.x + cx * rect.width - hsZoom / 2);
+                h.setAttribute('y', rect.y + cy * rect.height - hsZoom / 2);
+                h.setAttribute('width', hsZoom);
+                h.setAttribute('height', hsZoom);
                 h.setAttribute('fill', gridColorRgb);
             });
 
@@ -1200,13 +1200,10 @@ return medianColor(pixels);
             return { x: svgPt.x, y: svgPt.y };
         }
 
-        // Handle size: for rendering use fixed image coords, for hit detection account for zoom
+        // Handle size in image coords (compensates for zoom so handles appear constant on screen)
         const HANDLE_SCREEN_PX = 12;
-        function getHandleSizeImg() {
-            return HANDLE_SCREEN_PX / canvasScale; // fixed size in image coords (viewBox will scale it)
-        }
         function getHandleSizeHit() {
-            return HANDLE_SCREEN_PX / (canvasScale * viewZoom); // for hit detection after viewBox transform
+            return HANDLE_SCREEN_PX / (canvasScale * viewZoom);
         }
 
         function getHitZone(pos) {
