@@ -245,6 +245,13 @@
         <div class="control-group">
             <input type="text" id="infoField" readonly title="Click to copy">
         </div>
+        <div class="control-group">
+            <label>Grid:</label>
+            <div class="color-swatch" id="gridColorSwatch" title="Grid/border color">
+                <div class="color-swatch-inner" id="gridColorSwatchInner" style="background:#e94560"></div>
+            </div>
+            <input type="color" id="gridColorPicker" class="color-picker-hidden" value="#e94560">
+        </div>
         <div class="control-group chroma-group">
             <label>Chroma:</label>
             <button class="icon-btn" id="chromaToggle" title="Enable chroma key">
@@ -310,6 +317,7 @@
         let chromaTolerance = 30;
         let eyedropperMode = false;
         let tileMode = 'square'; // 'square', 'hex', 'hexV', 'tri'
+        let gridColor = [233, 69, 96]; // RGB for #e94560
 
         // Helper to set up exclusive button groups
         function setupBtnGroup(containerId, onChange) {
@@ -442,12 +450,35 @@
 
         updateChromaSwatch();
 
+        // Grid color controls
+        function updateGridColorSwatch() {
+            const [r, g, b] = gridColor;
+            $('gridColorSwatchInner').style.background = `rgb(${r},${g},${b})`;
+        }
+
+        $('gridColorSwatch').addEventListener('click', () => {
+            $('gridColorPicker').value = rgbToHex(gridColor);
+            $('gridColorPicker').click();
+        });
+
+        let gridPickerUndoPushed = false;
+        $('gridColorPicker').addEventListener('input', e => {
+            if (!gridPickerUndoPushed) { pushUndo(); gridPickerUndoPushed = true; }
+            gridColor = hexToRgb(e.target.value);
+            updateGridColorSwatch();
+            render();
+            autoSave();
+        });
+        $('gridColorPicker').addEventListener('change', () => { gridPickerUndoPushed = false; });
+
+        updateGridColorSwatch();
+
         // State helpers - used by undo/redo and localStorage
         function getState() {
             return { rect: { ...rect }, n: parseInt(nSlider.value), m: parseInt(mSlider.value),
                 gridOpacity, sampleMode, aspectLocked, lockedAspectRatio, resolutionLocked, expandModeOn,
                 nMax: parseInt(nSlider.max), mMax: parseInt(mSlider.max),
-                chromaEnabled, chromaColor, chromaTolerance, tileMode };
+                chromaEnabled, chromaColor, chromaTolerance, tileMode, gridColor };
         }
 
         function applyState(s) {
@@ -465,8 +496,10 @@
             chromaColor = s.chromaColor ?? [0, 255, 0];
             chromaTolerance = s.chromaTolerance ?? 30;
             tileMode = s.tileMode ?? s.hexMode ? 'hex' : 'square'; // backwards compat
+            gridColor = s.gridColor ?? [233, 69, 96];
 
             // Update UI
+            updateGridColorSwatch();
             $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == Math.round(gridOpacity * 100)));
             $('sampleBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value === sampleMode));
             $('tileBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value === tileMode));
@@ -530,9 +563,7 @@
                 const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
                 return sum.map(v => v / pixels.length);
             }
-            // median
-            const mid = Math.floor(pixels.length / 2);
-            return [0, 1, 2].map(i => pixels.map(p => p[i]).sort((a, b) => a - b)[mid]);
+return medianColor(pixels);
         }
 
         // Info field
@@ -735,6 +766,17 @@ ${paths}</svg>`;
             return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
         }
 
+        function medianColor(pixels) {
+            const half = pixels.length >> 1;
+            return [0, 1, 2].map(i => {
+                const bins = new Uint32Array(256);
+                for (const p of pixels) bins[p[i]]++;
+                let sum = 0;
+                for (let v = 0; v < 256; v++) { sum += bins[v]; if (sum > half) return v; }
+                return 255;
+            });
+        }
+
         // Hexagon helper functions - stretched to fit grid
         function drawHexPath(ctx, cx, cy, halfW, halfH) {
             // Flat-top hexagon, stretched to fit halfW (horizontal) and halfH (vertical)
@@ -801,9 +843,7 @@ ${paths}</svg>`;
                 const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
                 return sum.map(v => v / pixels.length);
             }
-            // median
-            const mid = Math.floor(pixels.length / 2);
-            return [0, 1, 2].map(i => pixels.map(p => p[i]).sort((a, b) => a - b)[mid]);
+return medianColor(pixels);
         }
 
         // Pointy-top hexagon helpers (rotated 90 degrees from flat-top)
@@ -871,9 +911,7 @@ ${paths}</svg>`;
                 const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
                 return sum.map(v => v / pixels.length);
             }
-            // median
-            const mid = Math.floor(pixels.length / 2);
-            return [0, 1, 2].map(i => pixels.map(p => p[i]).sort((a, b) => a - b)[mid]);
+return medianColor(pixels);
         }
 
         // Triangle helper functions - stretched to fit grid
@@ -955,9 +993,7 @@ ${paths}</svg>`;
                 const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
                 return sum.map(v => v / pixels.length);
             }
-            // median
-            const mid = Math.floor(pixels.length / 2);
-            return [0, 1, 2].map(i => pixels.map(p => p[i]).sort((a, b) => a - b)[mid]);
+return medianColor(pixels);
         }
 
         function render() {
@@ -1012,7 +1048,7 @@ ${paths}</svg>`;
                 }
 
                 // Hex grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
+                ctx.strokeStyle = `rgba(${gridColor.join(',')},0.5)`; ctx.lineWidth = lineWidth;
                 for (let col = 0; col < n; col++) {
                     for (let row = 0; row < m; row++) {
                         const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, rect.x, rect.y);
@@ -1041,7 +1077,7 @@ ${paths}</svg>`;
                 }
 
                 // Hex grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
+                ctx.strokeStyle = `rgba(${gridColor.join(',')},0.5)`; ctx.lineWidth = lineWidth;
                 for (let row = 0; row < m; row++) {
                     for (let col = 0; col < n; col++) {
                         const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, rect.x, rect.y);
@@ -1070,7 +1106,7 @@ ${paths}</svg>`;
                 }
 
                 // Triangle grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
+                ctx.strokeStyle = `rgba(${gridColor.join(',')},0.5)`; ctx.lineWidth = lineWidth;
                 for (let row = 0; row < m; row++) {
                     for (let col = 0; col < n; col++) {
                         const tri = getTriVertices(col, row, triW, triH, rect.x, rect.y);
@@ -1092,7 +1128,7 @@ ${paths}</svg>`;
                 }
 
                 // Grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
+                ctx.strokeStyle = `rgba(${gridColor.join(',')},0.5)`; ctx.lineWidth = lineWidth;
                 ctx.beginPath();
                 for (let i = 0; i <= n; i++) { const x = rect.x + i * cellW; ctx.moveTo(x, rect.y); ctx.lineTo(x, rect.y + rect.height); }
                 for (let i = 0; i <= m; i++) { const y = rect.y + i * cellH; ctx.moveTo(rect.x, y); ctx.lineTo(rect.x + rect.width, y); }
@@ -1100,9 +1136,10 @@ ${paths}</svg>`;
             }
 
             // Border and handles
-            ctx.strokeStyle = '#e94560'; ctx.lineWidth = 2 * lineWidth;
+            const gridColorStr = `rgb(${gridColor.join(',')})`;
+            ctx.strokeStyle = gridColorStr; ctx.lineWidth = 2 * lineWidth;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-            ctx.fillStyle = '#e94560';
+            ctx.fillStyle = gridColorStr;
             const hs = 10 / canvasScale; // 10 screen pixels in image coords
             [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => {
                 ctx.fillRect(rect.x + cx * rect.width - hs / 2, rect.y + cy * rect.height - hs / 2, hs, hs);
@@ -1328,13 +1365,15 @@ ${paths}</svg>`;
         }
 
         function handleFreeResize(dx, dy) {
-            const isLeft = dragging.includes('l') || dragging === 'left';
-            const isTop = dragging.includes('t') || dragging === 'top';
-            const isRight = dragging.includes('r') || dragging === 'right';
-            const isBottom = dragging.includes('b') || dragging === 'bottom';
+            // For corners (tl, tr, bl, br): check character position
+            // For edges (left, right, top, bottom): exact match only
+            const isLeft = dragging === 'left' || dragging === 'tl' || dragging === 'bl';
+            const isRight = dragging === 'right' || dragging === 'tr' || dragging === 'br';
+            const isTop = dragging === 'top' || dragging === 'tl' || dragging === 'tr';
+            const isBottom = dragging === 'bottom' || dragging === 'bl' || dragging === 'br';
 
-            if (isRight || (dragging.length === 2 && dragging[1] === 'r')) rect.width = Math.max(MIN_RECT_SIZE, rectStart.width + dx);
-            if (isBottom || (dragging.length === 2 && dragging[0] === 'b')) rect.height = Math.max(MIN_RECT_SIZE, rectStart.height + dy);
+            if (isRight) rect.width = Math.max(MIN_RECT_SIZE, rectStart.width + dx);
+            if (isBottom) rect.height = Math.max(MIN_RECT_SIZE, rectStart.height + dy);
             if (isLeft) { const nw = Math.max(MIN_RECT_SIZE, rectStart.width - dx); rect.x = rectStart.x + rectStart.width - nw; rect.width = nw; }
             if (isTop) { const nh = Math.max(MIN_RECT_SIZE, rectStart.height - dy); rect.y = rectStart.y + rectStart.height - nh; rect.height = nh; }
         }
