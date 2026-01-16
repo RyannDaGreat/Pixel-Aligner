@@ -72,11 +72,13 @@
             flex: 1;
             position: relative;
             overflow: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         }
-        #mainCanvas { max-width: 100%; max-height: 100%; display: block; }
+        #canvasWrapper {
+            position: absolute;
+            transform-origin: 0 0;
+            will-change: transform;
+        }
+        #mainCanvas { display: block; }
         .drop-zone {
             position: absolute;
             inset: 0;
@@ -270,7 +272,9 @@
     </div>
 
     <div class="canvas-container" id="canvasContainer">
-        <canvas id="mainCanvas"></canvas>
+        <div id="canvasWrapper">
+            <canvas id="mainCanvas"></canvas>
+        </div>
         <div class="drop-zone show-initial" id="dropZone">
             <p>Drop an image here</p>
         </div>
@@ -285,6 +289,7 @@
         const canvas = $('mainCanvas');
         const ctx = canvas.getContext('2d');
         const container = $('canvasContainer');
+        const wrapper = $('canvasWrapper');
         const dropZone = $('dropZone');
         const nSlider = $('nSlider'), mSlider = $('mSlider');
         const nInput = $('nInput'), mInput = $('mInput');
@@ -749,23 +754,34 @@ ${paths}</svg>`;
             reader.readAsDataURL(file);
         }
 
-        let canvasScale = 1; // base scale from image coords to display coords (fit to container)
+        let canvasScale = 1; // scale from image coords to display coords
 
         function resizeCanvas() {
             if (!image) return;
             const cr = container.getBoundingClientRect();
             canvasScale = Math.min((cr.width - 40) / image.width, (cr.height - 40) / image.height, 1);
-            // Canvas fills container, we handle zoom/pan via transform
-            canvas.width = cr.width * RETINA;
-            canvas.height = cr.height * RETINA;
-            canvas.style.width = cr.width + 'px';
-            canvas.style.height = cr.height + 'px';
+            const displayW = image.width * canvasScale;
+            const displayH = image.height * canvasScale;
+            // Set canvas size for retina
+            canvas.width = displayW * RETINA;
+            canvas.height = displayH * RETINA;
+            canvas.style.width = displayW + 'px';
+            canvas.style.height = displayH + 'px';
+            // Scale context so we can draw in image coordinates
+            ctx.setTransform(canvasScale * RETINA, 0, 0, canvasScale * RETINA, 0, 0);
+            // Center wrapper initially
+            updateView();
         }
 
-        function updateTransform() {
-            // Combined transform: retina scaling, view zoom, base scale, and pan offset
-            const s = canvasScale * viewZoom * RETINA;
-            ctx.setTransform(s, 0, 0, s, viewOffset.x * RETINA, viewOffset.y * RETINA);
+        function updateView() {
+            // Apply pan/zoom via CSS transform on wrapper (GPU accelerated)
+            const cr = container.getBoundingClientRect();
+            const displayW = image.width * canvasScale;
+            const displayH = image.height * canvasScale;
+            // Center offset
+            const centerX = (cr.width - displayW) / 2;
+            const centerY = (cr.height - displayH) / 2;
+            wrapper.style.transform = `translate(${centerX + viewOffset.x}px, ${centerY + viewOffset.y}px) scale(${viewZoom})`;
         }
 
         function colorDistance(r1, g1, b1, r2, g2, b2) {
@@ -1004,10 +1020,8 @@ return medianColor(pixels);
 
         function render() {
             if (!image) return;
-            // Clear entire canvas (in screen coords), then set transform for drawing
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            updateTransform();
+            // Draw in image coordinates (ctx transform handles scaling)
+            ctx.clearRect(0, 0, image.width, image.height);
             ctx.drawImage(image, 0, 0, image.width, image.height);
 
             // Get image data at original resolution for sampling
@@ -1033,7 +1047,7 @@ return medianColor(pixels);
 
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
             const cellW = rect.width / n, cellH = rect.height / m;
-            const lineWidth = 1 / (canvasScale * viewZoom); // 1 screen pixel in image coords
+            const lineWidth = 1 / canvasScale; // 1 screen pixel in image coords
 
             if (tileMode === 'hex') {
                 // Flat-top hexagonal grid rendering
@@ -1148,7 +1162,7 @@ return medianColor(pixels);
             ctx.strokeStyle = gridColorStr; ctx.lineWidth = 2 * lineWidth;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
             ctx.fillStyle = gridColorStr;
-            const hs = 10 / (canvasScale * viewZoom); // 10 screen pixels in image coords
+            const hs = 10 / canvasScale; // 10 screen pixels in image coords
             [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => {
                 ctx.fillRect(rect.x + cx * rect.width - hs / 2, rect.y + cy * rect.height - hs / 2, hs, hs);
             });
@@ -1157,13 +1171,12 @@ return medianColor(pixels);
         }
 
         function getMousePos(e) {
-            const cr = canvas.getBoundingClientRect();
-            // Convert screen coords to image coords (accounting for pan and zoom)
-            const screenX = e.clientX - cr.left;
-            const screenY = e.clientY - cr.top;
+            // Get position relative to the transformed canvas
+            const wr = wrapper.getBoundingClientRect();
+            // wrapper is scaled by viewZoom, so divide by it
             return {
-                x: (screenX - viewOffset.x) / (canvasScale * viewZoom),
-                y: (screenY - viewOffset.y) / (canvasScale * viewZoom)
+                x: (e.clientX - wr.left) / (canvasScale * viewZoom),
+                y: (e.clientY - wr.top) / (canvasScale * viewZoom)
             };
         }
 
@@ -1395,11 +1408,11 @@ return medianColor(pixels);
         window.addEventListener('resize', () => { if (image) { resizeCanvas(); render(); } });
 
         // Trackpad pan/zoom: two-finger scroll = pan, pinch = zoom
-        canvas.addEventListener('wheel', e => {
+        container.addEventListener('wheel', e => {
             if (!image) return;
             e.preventDefault();
 
-            const cr = canvas.getBoundingClientRect();
+            const cr = container.getBoundingClientRect();
             const mouseX = e.clientX - cr.left;
             const mouseY = e.clientY - cr.top;
 
@@ -1408,17 +1421,27 @@ return medianColor(pixels);
                 const zoomFactor = 1 - e.deltaY * 0.01;
                 const newZoom = Math.min(Math.max(0.1, viewZoom * zoomFactor), 20);
 
-                // Zoom towards mouse position
+                // Zoom towards mouse position (relative to container center)
+                const displayW = image.width * canvasScale;
+                const displayH = image.height * canvasScale;
+                const centerX = (cr.width - displayW) / 2;
+                const centerY = (cr.height - displayH) / 2;
+
+                // Current position in view space
+                const viewX = mouseX - centerX - viewOffset.x;
+                const viewY = mouseY - centerY - viewOffset.y;
+
+                // Scale the offset to zoom towards cursor
                 const scale = newZoom / viewZoom;
-                viewOffset.x = mouseX - (mouseX - viewOffset.x) * scale;
-                viewOffset.y = mouseY - (mouseY - viewOffset.y) * scale;
+                viewOffset.x += viewX - viewX * scale;
+                viewOffset.y += viewY - viewY * scale;
                 viewZoom = newZoom;
             } else {
                 // Two-finger pan
                 viewOffset.x -= e.deltaX;
                 viewOffset.y -= e.deltaY;
             }
-            render();
+            updateView();
         }, { passive: false });
 
         // Double-click to reset view
@@ -1426,7 +1449,7 @@ return medianColor(pixels);
             if (!image) return;
             viewZoom = 1;
             viewOffset = { x: 0, y: 0 };
-            render();
+            updateView();
         });
 
         // Keyboard shortcuts
