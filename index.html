@@ -1180,7 +1180,14 @@ return medianColor(pixels);
             }
 
             dragging = getHitZone(pos);
-            if (dragging) { pushUndo(); dragStart = pos; rectStart = { ...rect }; nStart = parseInt(nSlider.value); mStart = parseInt(mSlider.value); }
+            if (dragging) {
+                pushUndo();
+                dragStart = pos;
+                rectStart = { ...rect };
+                nStart = parseInt(nSlider.value);
+                mStart = parseInt(mSlider.value);
+                if (aspectLocked) lockedAspectRatio = rect.width / rect.height;
+            }
         });
 
         mainSvg.addEventListener('mousemove', e => {
