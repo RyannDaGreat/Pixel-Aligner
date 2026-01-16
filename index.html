@@ -9,15 +9,18 @@
         :root {
             --bg-dark: #0b0d14;
             --bg-gradient: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f0f23 100%);
-            --glass-bg: rgba(255, 255, 255, 0.05);
-            --glass-border: rgba(255, 255, 255, 0.1);
+            --glass-bg: rgba(255, 255, 255, 0.025);
+            --glass-border: rgba(255, 255, 255, 0.5);
+            --glass-border-subtle: rgba(255, 255, 255, 0.1);
             --glass-highlight: rgba(255, 255, 255, 0.15);
+            --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 0 9px rgba(0, 0, 0, 0.2), 0 3px 8px rgba(0, 0, 0, 0.15);
             --accent: #e94560;
             --accent-glow: rgba(233, 69, 96, 0.4);
             --text-primary: #e8eef5;
             --text-muted: #8892a0;
             --shadow-deep: 0 8px 32px rgba(0, 0, 0, 0.4);
             --shadow-glow: 0 0 20px rgba(233, 69, 96, 0.2);
+            --toolbar-height: 52px;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body.dragging { user-select: none; -webkit-user-select: none; cursor: grabbing !important; }
@@ -83,49 +86,43 @@
             box-shadow: 0 0 8px var(--accent-glow);
             cursor: pointer;
         }
-        .btn {
-            padding: 6px 14px;
-            border: 1px solid var(--glass-border);
+        .btn, .icon-btn {
             border-radius: 6px;
             cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .btn {
+            padding: 6px 14px;
             font-size: 12px;
             font-weight: 500;
-            background: var(--glass-bg);
             color: var(--text-primary);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
         }
-        .btn:hover {
-            background: var(--glass-highlight);
-            border-color: rgba(255, 255, 255, 0.2);
+        .btn:hover, .icon-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
         }
         .btn.active {
             background: var(--accent);
             border-color: var(--accent);
             color: white;
-            box-shadow: 0 0 12px var(--accent-glow);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 0 12px var(--accent-glow);
         }
         .btn.accent {
             background: linear-gradient(135deg, var(--accent) 0%, #c73a54 100%);
             border-color: var(--accent);
-            box-shadow: 0 0 12px var(--accent-glow);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 0 12px var(--accent-glow);
         }
         .btn.accent:hover {
-            box-shadow: 0 0 20px var(--accent-glow);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 0 20px var(--accent-glow);
         }
         .icon-btn {
-            background: var(--glass-bg);
-            border: 1px solid var(--glass-border);
-            border-radius: 6px;
-            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             padding: 6px 10px;
             color: var(--text-muted);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
             font-size: 16px;
         }
         .icon-btn:hover {
-            background: var(--glass-highlight);
             color: var(--text-primary);
         }
         .icon-btn:active {
@@ -134,7 +131,7 @@
         .icon-btn.active {
             color: var(--accent);
             border-color: var(--accent);
-            box-shadow: 0 0 8px var(--accent-glow);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 0 8px var(--accent-glow);
         }
         .icon-btn.bounce {
             animation: bounce-pulse 0.3s ease;
@@ -181,8 +178,6 @@
         .slider-pair { display: flex; flex-direction: column; gap: 6px; }
         .num-input {
             width: 50px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--glass-border);
             color: var(--accent);
             padding: 4px;
             border-radius: 4px;
@@ -244,8 +239,6 @@
             box-shadow: var(--shadow-deep);
         }
         #infoField {
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--glass-border);
             color: var(--accent);
             padding: 6px 10px;
             border-radius: 6px;
@@ -257,15 +250,14 @@
         #infoField:focus {
             outline: none;
             border-color: var(--accent);
+            box-shadow: 0 0 8px var(--accent-glow);
         }
         .chroma-group {
             display: flex;
             align-items: center;
             gap: 8px;
             padding: 6px 10px;
-            background: rgba(0, 0, 0, 0.2);
             border-radius: 8px;
-            border: 1px solid var(--glass-border);
         }
         .color-swatch {
             width: 26px;
@@ -297,10 +289,10 @@
         /* Palette panel */
         .palette-panel {
             position: fixed;
-            top: 60px;
+            top: var(--toolbar-height, 60px);
             right: 0;
             width: 260px;
-            max-height: calc(100vh - 80px);
+            max-height: calc(100vh - var(--toolbar-height, 60px) - 20px);
             background: var(--glass-bg);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
@@ -1762,6 +1754,47 @@
 
         loadFromLocalStorage();
         initBtnGroupIndicators();
+
+        // Glassify elements - adds liquid glass styling
+        function glassify(selector) {
+            document.querySelectorAll(selector).forEach(el => {
+                el.style.position = 'relative';
+                el.style.background = 'var(--glass-bg)';
+                el.style.border = '1px solid var(--glass-border)';
+                el.style.backdropFilter = 'blur(4px)';
+                el.style.webkitBackdropFilter = 'blur(4px)';
+                el.style.boxShadow = 'var(--glass-shadow)';
+
+                // Add highlight overlays if not already present
+                if (!el.querySelector('.glass-highlight')) {
+                    const before = document.createElement('div');
+                    before.className = 'glass-highlight';
+                    before.style.cssText = 'position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,0.12) 0%,transparent 50%);pointer-events:none;';
+                    const after = document.createElement('div');
+                    after.className = 'glass-highlight';
+                    after.style.cssText = 'position:absolute;inset:0;border-radius:inherit;background:linear-gradient(315deg,rgba(255,255,255,0.06) 0%,transparent 50%);pointer-events:none;';
+                    el.insertBefore(after, el.firstChild);
+                    el.insertBefore(before, el.firstChild);
+                }
+            });
+        }
+
+        // Apply glass styling to elements
+        glassify('.btn:not(.btn-group .btn)');
+        glassify('.icon-btn');
+        glassify('.num-input');
+        glassify('#infoField');
+        glassify('.chroma-group');
+
+        // Update palette panel position based on toolbar height
+        function updateToolbarHeight() {
+            const toolbar = document.querySelector('.controls');
+            if (toolbar) {
+                document.documentElement.style.setProperty('--toolbar-height', toolbar.offsetHeight + 'px');
+            }
+        }
+        updateToolbarHeight();
+        window.addEventListener('resize', updateToolbarHeight);
     </script>
 </body>
 </html>
