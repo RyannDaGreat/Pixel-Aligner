@@ -1025,42 +1025,115 @@ return medianColor(pixels);
             return cachedImgData;
         }
 
+        // Persistent SVG elements
+        let svgElements = { image: null, tiles: null, border: null, handles: [] };
+        let lastTileKey = '';
+
+        function initSvgElements() {
+            const ns = 'http://www.w3.org/2000/svg';
+            mainSvg.innerHTML = '';
+
+            svgElements.image = document.createElementNS(ns, 'image');
+            mainSvg.appendChild(svgElements.image);
+
+            svgElements.tiles = document.createElementNS(ns, 'g');
+            mainSvg.appendChild(svgElements.tiles);
+
+            svgElements.border = document.createElementNS(ns, 'rect');
+            svgElements.border.setAttribute('fill', 'none');
+            svgElements.border.setAttribute('vector-effect', 'non-scaling-stroke');
+            svgElements.border.setAttribute('stroke-width', '2');
+            mainSvg.appendChild(svgElements.border);
+
+            svgElements.handles = [];
+            for (let i = 0; i < 4; i++) {
+                const h = document.createElementNS(ns, 'rect');
+                svgElements.handles.push(h);
+                mainSvg.appendChild(h);
+            }
+        }
+
+        let renderPending = false;
         function render() {
+            if (!image || renderPending) return;
+            renderPending = true;
+            requestAnimationFrame(() => {
+                renderPending = false;
+                renderNow();
+            });
+        }
+
+        function renderNow() {
             if (!image) return;
+            if (!svgElements.image) initSvgElements();
 
             const imgData = getImageData();
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
-            const cellW = rect.width / n, cellH = rect.height / m;
-            const nss = 'vector-effect="non-scaling-stroke"'; // keeps stroke width constant
+            const fastMode = dragging !== null;
             const gridColorRgba = `rgba(${gridColor.join(',')},0.5)`;
             const gridColorRgb = `rgb(${gridColor.join(',')})`;
             const hs = getHandleSizeImg();
 
-            // Helper to get fill color with chroma check
+            // Update image
+            if (svgElements.image.getAttribute('href') !== imageSrc) {
+                svgElements.image.setAttribute('href', imageSrc);
+                svgElements.image.setAttribute('width', image.width);
+                svgElements.image.setAttribute('height', image.height);
+            }
+
+            // Check if tiles need rebuild (structure changed)
+            const tileKey = `${n},${m},${tileMode}`;
+            const structureChanged = tileKey !== lastTileKey;
+
+            if (structureChanged) {
+                // Rebuild tile elements
+                const ns = 'http://www.w3.org/2000/svg';
+                svgElements.tiles.innerHTML = '';
+                const totalTiles = n * m;
+                const isSquare = tileMode === 'square';
+                for (let i = 0; i < totalTiles; i++) {
+                    const el = document.createElementNS(ns, isSquare ? 'rect' : 'polygon');
+                    el.setAttribute('vector-effect', 'non-scaling-stroke');
+                    el.setAttribute('stroke-width', '1');
+                    svgElements.tiles.appendChild(el);
+                }
+                lastTileKey = tileKey;
+            }
+
+            // Update tile attributes
+            const tiles = svgElements.tiles.children;
+            const cellW = rect.width / n, cellH = rect.height / m;
+
+            function sampleCenter(cx, cy) {
+                const px = Math.floor(cx), py = Math.floor(cy);
+                if (px < 0 || px >= image.width || py < 0 || py >= image.height) return null;
+                const idx = (py * image.width + px) * 4;
+                return [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
+            }
+
             function getFill(color) {
-                if (!color) return null;
+                if (!color) return 'none';
                 if (chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance) {
                     return 'transparent';
                 }
-                return `rgb(${color.map(Math.round).join(',')})`;
+                return `rgb(${color[0]|0},${color[1]|0},${color[2]|0})`;
             }
 
-            // Start with embedded image
-            let content = `<image href="${imageSrc}" x="0" y="0" width="${image.width}" height="${image.height}"/>`;
+            function setTileStyle(el, fill) {
+                el.setAttribute('fill', fill);
+                el.setAttribute('fill-opacity', gridOpacity);
+                el.setAttribute('stroke', gridColorRgba);
+            }
 
-            // Build tile shapes
+            let idx = 0;
             if (tileMode === 'hex') {
                 const { hexW, hexH, halfW, halfH } = getHexGeometry(n, m, rect.width, rect.height);
                 for (let col = 0; col < n; col++) {
                     for (let row = 0; row < m; row++) {
                         const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, rect.x, rect.y);
-                        const color = sampleHexCell(imgData, cx, cy, halfW, halfH, image.width, image.height);
-                        const fill = getFill(color);
-                        const pts = [
-                            [cx + halfW, cy], [cx + halfW * 0.5, cy - halfH], [cx - halfW * 0.5, cy - halfH],
-                            [cx - halfW, cy], [cx - halfW * 0.5, cy + halfH], [cx + halfW * 0.5, cy + halfH]
-                        ].map(([x, y]) => `${x},${y}`).join(' ');
-                        content += `<polygon points="${pts}" fill="${fill || 'none'}" fill-opacity="${gridOpacity}" stroke="${gridColorRgba}" stroke-width="1" ${nss}/>`;
+                        const el = tiles[idx++];
+                        el.setAttribute('points', `${cx + halfW},${cy} ${cx + halfW * 0.5},${cy - halfH} ${cx - halfW * 0.5},${cy - halfH} ${cx - halfW},${cy} ${cx - halfW * 0.5},${cy + halfH} ${cx + halfW * 0.5},${cy + halfH}`);
+                        setTileStyle(el, getFill(fastMode ? sampleCenter(cx, cy) : sampleHexCell(imgData, cx, cy, halfW, halfH, image.width, image.height)));
                     }
                 }
             } else if (tileMode === 'hexV') {
@@ -1068,13 +1141,9 @@ return medianColor(pixels);
                 for (let row = 0; row < m; row++) {
                     for (let col = 0; col < n; col++) {
                         const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, rect.x, rect.y);
-                        const color = sampleHexVCell(imgData, cx, cy, halfW, halfH, image.width, image.height);
-                        const fill = getFill(color);
-                        const pts = [
-                            [cx, cy - halfH], [cx + halfW, cy - halfH * 0.5], [cx + halfW, cy + halfH * 0.5],
-                            [cx, cy + halfH], [cx - halfW, cy + halfH * 0.5], [cx - halfW, cy - halfH * 0.5]
-                        ].map(([x, y]) => `${x},${y}`).join(' ');
-                        content += `<polygon points="${pts}" fill="${fill || 'none'}" fill-opacity="${gridOpacity}" stroke="${gridColorRgba}" stroke-width="1" ${nss}/>`;
+                        const el = tiles[idx++];
+                        el.setAttribute('points', `${cx},${cy - halfH} ${cx + halfW},${cy - halfH * 0.5} ${cx + halfW},${cy + halfH * 0.5} ${cx},${cy + halfH} ${cx - halfW},${cy + halfH * 0.5} ${cx - halfW},${cy - halfH * 0.5}`);
+                        setTileStyle(el, getFill(fastMode ? sampleCenter(cx, cy) : sampleHexVCell(imgData, cx, cy, halfW, halfH, image.width, image.height)));
                     }
                 }
             } else if (tileMode === 'tri') {
@@ -1082,38 +1151,43 @@ return medianColor(pixels);
                 for (let row = 0; row < m; row++) {
                     for (let col = 0; col < n; col++) {
                         const tri = getTriVertices(col, row, triW, triH, rect.x, rect.y);
-                        const color = sampleTriCell(imgData, tri, image.width, image.height);
-                        const fill = getFill(color);
-                        const pts = `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`;
-                        content += `<polygon points="${pts}" fill="${fill || 'none'}" fill-opacity="${gridOpacity}" stroke="${gridColorRgba}" stroke-width="1" ${nss}/>`;
+                        const el = tiles[idx++];
+                        el.setAttribute('points', `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`);
+                        setTileStyle(el, getFill(fastMode ? sampleCenter(tri.cx, tri.cy) : sampleTriCell(imgData, tri, image.width, image.height)));
                     }
                 }
             } else {
-                // Square grid
                 for (let row = 0; row < m; row++) {
                     for (let col = 0; col < n; col++) {
                         const x = rect.x + col * cellW, y = rect.y + row * cellH;
-                        const color = sampleCell(imgData, x, y, x + cellW, y + cellH, image.width);
-                        const fill = getFill(color);
-                        content += `<rect x="${x}" y="${y}" width="${cellW}" height="${cellH}" fill="${fill || 'none'}" fill-opacity="${gridOpacity}" stroke="${gridColorRgba}" stroke-width="1" ${nss}/>`;
+                        const el = tiles[idx++];
+                        el.setAttribute('x', x);
+                        el.setAttribute('y', y);
+                        el.setAttribute('width', cellW);
+                        el.setAttribute('height', cellH);
+                        setTileStyle(el, getFill(fastMode ? sampleCenter(x + cellW / 2, y + cellH / 2) : sampleCell(imgData, x, y, x + cellW, y + cellH, image.width)));
                     }
                 }
             }
 
-            // Border rect
-            content += `<rect x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}" fill="none" stroke="${gridColorRgb}" stroke-width="2" ${nss}/>`;
+            // Update border
+            svgElements.border.setAttribute('x', rect.x);
+            svgElements.border.setAttribute('y', rect.y);
+            svgElements.border.setAttribute('width', rect.width);
+            svgElements.border.setAttribute('height', rect.height);
+            svgElements.border.setAttribute('stroke', gridColorRgb);
 
-            // Corner handles
-            [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => {
-                const hx = rect.x + cx * rect.width - hs / 2;
-                const hy = rect.y + cy * rect.height - hs / 2;
-                content += `<rect x="${hx}" y="${hy}" width="${hs}" height="${hs}" fill="${gridColorRgb}"/>`;
+            // Update handles
+            [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy], i) => {
+                const h = svgElements.handles[i];
+                h.setAttribute('x', rect.x + cx * rect.width - hs / 2);
+                h.setAttribute('y', rect.y + cy * rect.height - hs / 2);
+                h.setAttribute('width', hs);
+                h.setAttribute('height', hs);
+                h.setAttribute('fill', gridColorRgb);
             });
 
-            // Set SVG content (updateView handles viewBox and size)
-            mainSvg.innerHTML = content;
             updateView();
-
             updateInfoField();
         }
 
