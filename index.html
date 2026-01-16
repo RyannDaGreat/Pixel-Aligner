@@ -1006,6 +1006,7 @@
             palettePanelOpen = open ?? !palettePanelOpen;
             $('palettePanel').classList.toggle('open', palettePanelOpen);
             $('paletteToggle').classList.toggle('active', palettePanelOpen);
+            if (palettePanelOpen) updateToolbarHeight();
         }
 
         function setPaletteEnabled(enabled) {
@@ -1793,7 +1794,6 @@
                 document.documentElement.style.setProperty('--toolbar-height', toolbar.offsetHeight + 'px');
             }
         }
-        updateToolbarHeight();
         window.addEventListener('resize', updateToolbarHeight);
     </script>
 </body>
