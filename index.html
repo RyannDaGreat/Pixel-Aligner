@@ -327,6 +327,77 @@
         let viewOffset = { x: 0, y: 0 };
         let viewZoom = 1;
 
+        // === HELPER FUNCTIONS ===
+        function update() { render(); autoSave(); }
+
+        function setBtnGroupValue(groupId, value) {
+            $(groupId).querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == value));
+        }
+
+        function setChromaEnabled(enabled) {
+            chromaEnabled = enabled;
+            $('chromaToggle').classList.toggle('active', enabled);
+            $('chromaToggle').querySelector('.iconify').dataset.icon = enabled ? 'mdi:eye' : 'mdi:eye-off';
+            updateChromaSwatch();
+        }
+
+        function setEyedropperMode(enabled) {
+            eyedropperMode = enabled;
+            $('eyedropperBtn').classList.toggle('active', enabled);
+            mainSvg.style.cursor = enabled ? 'crosshair' : 'default';
+        }
+
+        function setLockState(btnId, locked) {
+            const btn = $(btnId);
+            btn.classList.toggle('active', locked);
+            btn.querySelector('svg').innerHTML = locked ? LOCK_CLOSED : LOCK_OPEN;
+        }
+
+        function aggregatePixels(pixels) {
+            if (!pixels.length) return null;
+            if (sampleMode === 'mean') {
+                const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
+                return sum.map(v => v / pixels.length);
+            }
+            return medianColor(pixels);
+        }
+
+        function colorToFill(color, nullValue = null) {
+            if (!color) return nullValue;
+            if (chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance) {
+                return nullValue;
+            }
+            return `rgb(${color[0]|0},${color[1]|0},${color[2]|0})`;
+        }
+
+        // Geometry formulas for each tile mode
+        const TILE_GEOMETRY = {
+            hex:    { wF: n => n * 0.75 + 0.25, hF: m => m + 0.5,        snapW: 0.75, snapH: 1 },
+            hexV:   { wF: n => n + 0.5,         hF: m => m * 0.75 + 0.25, snapW: 1,    snapH: 0.75 },
+            tri:    { wF: n => (n + 1) / 2,     hF: m => m,              snapW: 0.5,  snapH: 1 },
+            square: { wF: n => n,               hF: m => m,              snapW: 1,    snapH: 1 }
+        };
+
+        // Lock icon SVG paths (moved up for setLockState)
+        const LOCK_CLOSED = '<path d="M4 8h2V6a2 2 0 114 0v2h2V6a4 4 0 10-8 0v2z"/><rect x="2" y="8" width="12" height="10" rx="2"/>';
+        const LOCK_OPEN = '<path d="M12 8h-2V6a2 2 0 10-4 0v2H4V6a4 4 0 118 0v2z"/><rect x="2" y="8" width="12" height="10" rx="2"/>';
+
+        // Color picker with undo tracking
+        function setupColorPicker(swatchId, pickerId, getColor, setColor, onUpdate) {
+            let undoPushed = false;
+            $(swatchId).addEventListener('click', () => {
+                $(pickerId).value = rgbToHex(getColor());
+                $(pickerId).click();
+            });
+            $(pickerId).addEventListener('input', e => {
+                if (!undoPushed) { pushUndo(); undoPushed = true; }
+                setColor(hexToRgb(e.target.value));
+                if (onUpdate) onUpdate();
+                update();
+            });
+            $(pickerId).addEventListener('change', () => { undoPushed = false; });
+        }
+
         // Helper to set up exclusive button groups
         function setupBtnGroup(containerId, onChange) {
             const container = $(containerId);
@@ -335,8 +406,7 @@
                     container.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     onChange(btn.dataset.value);
-                    render();
-                    autoSave();
+                    update();
                 });
             });
         }
@@ -347,60 +417,39 @@
         // Unified slider/input handling
         function syncNM(source, newVal) {
             newVal = Math.min(Math.max(1, newVal || 1), MAX_GRID);
-            nSlider.value = nInput.value = newVal;
-            if (resolutionLocked) mSlider.value = mInput.value = newVal;
-            else if (source === 'm') { mSlider.value = mInput.value = newVal; nSlider.value = nInput.value = parseInt(nSlider.value); }
-            render();
-            autoSave();
+            if (source === 'n') {
+                nSlider.value = nInput.value = newVal;
+                if (resolutionLocked) mSlider.value = mInput.value = newVal;
+            } else {
+                mSlider.value = mInput.value = newVal;
+                if (resolutionLocked) nSlider.value = nInput.value = newVal;
+            }
+            update();
         }
 
         nSlider.addEventListener('input', () => syncNM('n', parseInt(nSlider.value)));
-        mSlider.addEventListener('input', () => {
-            const val = Math.min(parseInt(mSlider.value), MAX_GRID);
-            mSlider.value = mInput.value = val;
-            if (resolutionLocked) { nSlider.value = nInput.value = val; }
-            render(); autoSave();
-        });
+        mSlider.addEventListener('input', () => syncNM('m', parseInt(mSlider.value)));
         nInput.addEventListener('input', () => syncNM('n', parseInt(nInput.value)));
-        mInput.addEventListener('input', () => {
-            const val = Math.min(Math.max(1, parseInt(mInput.value) || 1), MAX_GRID);
-            mSlider.value = mInput.value = val;
-            if (resolutionLocked) { nSlider.value = nInput.value = val; }
-            render(); autoSave();
-        });
+        mInput.addEventListener('input', () => syncNM('m', parseInt(mInput.value)));
 
-        // Lock icon SVG paths
-        const LOCK_CLOSED = '<path d="M4 8h2V6a2 2 0 114 0v2h2V6a4 4 0 10-8 0v2z"/><rect x="2" y="8" width="12" height="10" rx="2"/>';
-        const LOCK_OPEN = '<path d="M12 8h-2V6a2 2 0 10-4 0v2H4V6a4 4 0 118 0v2z"/><rect x="2" y="8" width="12" height="10" rx="2"/>';
-
-        function updateLockIcon(btn, locked) {
-            btn.querySelector('svg').innerHTML = locked ? LOCK_CLOSED : LOCK_OPEN;
-        }
-
-        function setupToggle(btnId, getter, setter, onToggle) {
+        function setupToggle(btnId, getter, setter, useLockIcon = false) {
             const btn = $(btnId);
             btn.addEventListener('click', () => {
                 const newVal = !getter();
                 setter(newVal);
                 btn.classList.toggle('active', newVal);
-                if (onToggle) onToggle(newVal, btn);
+                if (useLockIcon) setLockState(btnId, newVal);
                 autoSave();
             });
         }
 
-        setupToggle('aspectLock', () => aspectLocked, v => { pushUndo(); aspectLocked = v; if (v) lockedAspectRatio = rect.width / rect.height; }, updateLockIcon);
-        setupToggle('resolutionLock', () => resolutionLocked, v => { pushUndo(); resolutionLocked = v; }, updateLockIcon);
+        setupToggle('aspectLock', () => aspectLocked, v => { pushUndo(); aspectLocked = v; if (v) lockedAspectRatio = rect.width / rect.height; }, true);
+        setupToggle('resolutionLock', () => resolutionLocked, v => { pushUndo(); resolutionLocked = v; }, true);
         setupToggle('expandMode', () => expandModeOn, v => { pushUndo(); expandModeOn = v; });
 
-        setupBtnGroup('tileBtns', val => { pushUndo(); tileMode = val; render(); });
+        setupBtnGroup('tileBtns', val => { pushUndo(); tileMode = val; update(); });
 
-        // Chroma key controls
-        function updateChromaSwatch() {
-            const [r, g, b] = chromaColor;
-            $('chromaSwatchInner').style.background = chromaEnabled ? `rgb(${r},${g},${b})` : 'transparent';
-            $('chromaSwatch').style.borderColor = chromaEnabled ? '#e94560' : '#888';
-        }
-
+        // Color conversion helpers
         function hexToRgb(hex) {
             const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
             return result ? [parseInt(result[1], 16), parseInt(result[2], 16), parseInt(result[3], 16)] : [0, 255, 0];
@@ -410,74 +459,47 @@
             return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
         }
 
+        // Chroma key controls
+        function updateChromaSwatch() {
+            const [r, g, b] = chromaColor;
+            $('chromaSwatchInner').style.background = chromaEnabled ? `rgb(${r},${g},${b})` : 'transparent';
+            $('chromaSwatch').style.borderColor = chromaEnabled ? '#e94560' : '#888';
+        }
+
         $('chromaToggle').addEventListener('click', () => {
             pushUndo();
-            chromaEnabled = !chromaEnabled;
-            $('chromaToggle').classList.toggle('active', chromaEnabled);
-            $('chromaToggle').querySelector('.iconify').dataset.icon = chromaEnabled ? 'mdi:eye' : 'mdi:eye-off';
+            setChromaEnabled(!chromaEnabled);
+            update();
+        });
+
+        setupColorPicker('chromaSwatch', 'chromaColorPicker', () => chromaColor, c => {
+            chromaColor = c;
+            if (!chromaEnabled) setChromaEnabled(true);
             updateChromaSwatch();
-            render();
-            autoSave();
         });
 
-        $('chromaSwatch').addEventListener('click', () => {
-            $('chromaColorPicker').value = rgbToHex(chromaColor);
-            $('chromaColorPicker').click();
-        });
+        $('eyedropperBtn').addEventListener('click', () => setEyedropperMode(!eyedropperMode));
 
-        let chromaPickerUndoPushed = false;
-        $('chromaColorPicker').addEventListener('input', e => {
-            if (!chromaPickerUndoPushed) { pushUndo(); chromaPickerUndoPushed = true; }
-            chromaColor = hexToRgb(e.target.value);
-            if (!chromaEnabled) {
-                chromaEnabled = true;
-                $('chromaToggle').classList.add('active');
-                $('chromaToggle').querySelector('.iconify').dataset.icon = 'mdi:eye';
-            }
-            updateChromaSwatch();
-            render();
-            autoSave();
-        });
-        $('chromaColorPicker').addEventListener('change', () => { chromaPickerUndoPushed = false; });
-
-        $('eyedropperBtn').addEventListener('click', () => {
-            eyedropperMode = !eyedropperMode;
-            $('eyedropperBtn').classList.toggle('active', eyedropperMode);
-            mainSvg.style.cursor = eyedropperMode ? 'crosshair' : 'default';
-        });
-
-        let chromaToleranceUndoPushed = false;
-        $('chromaTolerance').addEventListener('mousedown', () => { pushUndo(); chromaToleranceUndoPushed = true; });
+        let toleranceUndoPushed = false;
+        $('chromaTolerance').addEventListener('mousedown', () => { pushUndo(); toleranceUndoPushed = true; });
         $('chromaTolerance').addEventListener('input', e => {
             chromaTolerance = parseInt(e.target.value);
             $('chromaToleranceVal').textContent = chromaTolerance;
-            render();
-            autoSave();
+            update();
         });
-        $('chromaTolerance').addEventListener('mouseup', () => { chromaToleranceUndoPushed = false; });
+        $('chromaTolerance').addEventListener('mouseup', () => { toleranceUndoPushed = false; });
 
         updateChromaSwatch();
 
         // Grid color controls
         function updateGridColorSwatch() {
-            const [r, g, b] = gridColor;
-            $('gridColorSwatchInner').style.background = `rgb(${r},${g},${b})`;
+            $('gridColorSwatchInner').style.background = `rgb(${gridColor.join(',')})`;
         }
 
-        $('gridColorSwatch').addEventListener('click', () => {
-            $('gridColorPicker').value = rgbToHex(gridColor);
-            $('gridColorPicker').click();
-        });
-
-        let gridPickerUndoPushed = false;
-        $('gridColorPicker').addEventListener('input', e => {
-            if (!gridPickerUndoPushed) { pushUndo(); gridPickerUndoPushed = true; }
-            gridColor = hexToRgb(e.target.value);
+        setupColorPicker('gridColorSwatch', 'gridColorPicker', () => gridColor, c => {
+            gridColor = c;
             updateGridColorSwatch();
-            render();
-            autoSave();
         });
-        $('gridColorPicker').addEventListener('change', () => { gridPickerUndoPushed = false; });
 
         updateGridColorSwatch();
 
@@ -508,16 +530,15 @@
 
             // Update UI
             updateGridColorSwatch();
-            $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == Math.round(gridOpacity * 100)));
-            $('sampleBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value === sampleMode));
-            $('tileBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value === tileMode));
-            ['aspectLock', 'resolutionLock'].forEach(id => { const btn = $(id); btn.classList.toggle('active', id === 'aspectLock' ? aspectLocked : resolutionLocked); updateLockIcon(btn, id === 'aspectLock' ? aspectLocked : resolutionLocked); });
+            setBtnGroupValue('opacityBtns', Math.round(gridOpacity * 100));
+            setBtnGroupValue('sampleBtns', sampleMode);
+            setBtnGroupValue('tileBtns', tileMode);
+            setLockState('aspectLock', aspectLocked);
+            setLockState('resolutionLock', resolutionLocked);
             $('expandMode').classList.toggle('active', expandModeOn);
-            $('chromaToggle').classList.toggle('active', chromaEnabled);
-            $('chromaToggle').querySelector('.iconify').dataset.icon = chromaEnabled ? 'mdi:eye' : 'mdi:eye-off';
+            setChromaEnabled(chromaEnabled);
             $('chromaTolerance').value = chromaTolerance;
             $('chromaToleranceVal').textContent = chromaTolerance;
-            updateChromaSwatch();
         }
 
         // Undo/redo
@@ -565,13 +586,7 @@
                 const idx = (y * width + x) * 4;
                 pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
             }
-            if (!pixels.length) return null;
-
-            if (sampleMode === 'mean') {
-                const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
-                return sum.map(v => v / pixels.length);
-            }
-return medianColor(pixels);
+            return aggregatePixels(pixels);
         }
 
         // Info field
@@ -612,100 +627,42 @@ return medianColor(pixels);
         $('saveSvgBtn').addEventListener('click', () => {
             if (!image) return;
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
-
             const imgData = getImageData();
-
-            // SVG dimensions - use a reasonable output size
             const svgW = 800, svgH = 800 * (rect.height / rect.width);
             const scaleX = svgW / rect.width, scaleY = svgH / rect.height;
-
             let paths = '';
-
-            function rgbToFill(color) {
-                if (!color) return null;
-                if (chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance) {
-                    return null; // transparent
-                }
-                return `rgb(${color.map(Math.round).join(',')})`;
-            }
+            const scalePts = pts => pts.map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
 
             if (tileMode === 'hex') {
                 const { hexW, hexH, halfW, halfH } = getHexGeometry(n, m, rect.width, rect.height);
-                for (let col = 0; col < n; col++) {
-                    for (let row = 0; row < m; row++) {
-                        const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, 0, 0);
-                        const color = sampleHexCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, image.width, image.height);
-                        const fill = rgbToFill(color);
-                        if (fill) {
-                            // Flat-top hex vertices
-                            const pts = [
-                                [cx + halfW, cy],
-                                [cx + halfW * 0.5, cy - halfH],
-                                [cx - halfW * 0.5, cy - halfH],
-                                [cx - halfW, cy],
-                                [cx - halfW * 0.5, cy + halfH],
-                                [cx + halfW * 0.5, cy + halfH]
-                            ].map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
-                            paths += `<polygon points="${pts}" fill="${fill}"/>\n`;
-                        }
-                    }
+                for (let col = 0; col < n; col++) for (let row = 0; row < m; row++) {
+                    const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, 0, 0);
+                    const fill = colorToFill(sampleHexCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, image.width, image.height));
+                    if (fill) paths += `<polygon points="${scalePts([[cx + halfW, cy], [cx + halfW * 0.5, cy - halfH], [cx - halfW * 0.5, cy - halfH], [cx - halfW, cy], [cx - halfW * 0.5, cy + halfH], [cx + halfW * 0.5, cy + halfH]])}" fill="${fill}"/>\n`;
                 }
             } else if (tileMode === 'hexV') {
                 const { hexW, hexH, halfW, halfH } = getHexVGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) {
-                    for (let col = 0; col < n; col++) {
-                        const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, 0, 0);
-                        const color = sampleHexVCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, image.width, image.height);
-                        const fill = rgbToFill(color);
-                        if (fill) {
-                            // Pointy-top hex vertices
-                            const pts = [
-                                [cx, cy - halfH],
-                                [cx + halfW, cy - halfH * 0.5],
-                                [cx + halfW, cy + halfH * 0.5],
-                                [cx, cy + halfH],
-                                [cx - halfW, cy + halfH * 0.5],
-                                [cx - halfW, cy - halfH * 0.5]
-                            ].map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
-                            paths += `<polygon points="${pts}" fill="${fill}"/>\n`;
-                        }
-                    }
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, 0, 0);
+                    const fill = colorToFill(sampleHexVCell(imgData, rect.x + cx, rect.y + cy, halfW, halfH, image.width, image.height));
+                    if (fill) paths += `<polygon points="${scalePts([[cx, cy - halfH], [cx + halfW, cy - halfH * 0.5], [cx + halfW, cy + halfH * 0.5], [cx, cy + halfH], [cx - halfW, cy + halfH * 0.5], [cx - halfW, cy - halfH * 0.5]])}" fill="${fill}"/>\n`;
                 }
             } else if (tileMode === 'tri') {
                 const { triW, triH } = getTriGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) {
-                    for (let col = 0; col < n; col++) {
-                        const tri = getTriVertices(col, row, triW, triH, 0, 0);
-                        const color = sampleTriCell(imgData, { ...tri, cx: rect.x + tri.cx, cy: rect.y + tri.cy, x0: rect.x + tri.x0, y0: rect.y + tri.y0, x1: rect.x + tri.x1, y1: rect.y + tri.y1, x2: rect.x + tri.x2, y2: rect.y + tri.y2 }, image.width, image.height);
-                        const fill = rgbToFill(color);
-                        if (fill) {
-                            const pts = [
-                                [tri.x0, tri.y0],
-                                [tri.x1, tri.y1],
-                                [tri.x2, tri.y2]
-                            ].map(([x, y]) => `${(x * scaleX).toFixed(2)},${(y * scaleY).toFixed(2)}`).join(' ');
-                            paths += `<polygon points="${pts}" fill="${fill}"/>\n`;
-                        }
-                    }
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const tri = getTriVertices(col, row, triW, triH, 0, 0);
+                    const fill = colorToFill(sampleTriCell(imgData, { ...tri, cx: rect.x + tri.cx, cy: rect.y + tri.cy, x0: rect.x + tri.x0, y0: rect.y + tri.y0, x1: rect.x + tri.x1, y1: rect.y + tri.y1, x2: rect.x + tri.x2, y2: rect.y + tri.y2 }, image.width, image.height));
+                    if (fill) paths += `<polygon points="${scalePts([[tri.x0, tri.y0], [tri.x1, tri.y1], [tri.x2, tri.y2]])}" fill="${fill}"/>\n`;
                 }
             } else {
-                // Square
                 const cellW = rect.width / n, cellH = rect.height / m;
-                for (let row = 0; row < m; row++) {
-                    for (let col = 0; col < n; col++) {
-                        const color = sampleCell(imgData, rect.x + col * cellW, rect.y + row * cellH, rect.x + (col + 1) * cellW, rect.y + (row + 1) * cellH, image.width);
-                        const fill = rgbToFill(color);
-                        if (fill) {
-                            paths += `<rect x="${(col * cellW * scaleX).toFixed(2)}" y="${(row * cellH * scaleY).toFixed(2)}" width="${(cellW * scaleX).toFixed(2)}" height="${(cellH * scaleY).toFixed(2)}" fill="${fill}"/>\n`;
-                        }
-                    }
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const fill = colorToFill(sampleCell(imgData, rect.x + col * cellW, rect.y + row * cellH, rect.x + (col + 1) * cellW, rect.y + (row + 1) * cellH, image.width));
+                    if (fill) paths += `<rect x="${(col * cellW * scaleX).toFixed(2)}" y="${(row * cellH * scaleY).toFixed(2)}" width="${(cellW * scaleX).toFixed(2)}" height="${(cellH * scaleY).toFixed(2)}" fill="${fill}"/>\n`;
                 }
             }
 
-            const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${svgW.toFixed(0)}" height="${svgH.toFixed(0)}" viewBox="0 0 ${svgW.toFixed(0)} ${svgH.toFixed(0)}">
-${paths}</svg>`;
-
+            const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${svgW.toFixed(0)}" height="${svgH.toFixed(0)}" viewBox="0 0 ${svgW.toFixed(0)} ${svgH.toFixed(0)}">\n${paths}</svg>`;
             const blob = new Blob([svg], { type: 'image/svg+xml' });
             const link = document.createElement('a');
             link.download = `pixel_art_${tileMode}_n${n}_m${m}.svg`;
@@ -720,9 +677,10 @@ ${paths}</svg>`;
             mSlider.value = mInput.value = DEFAULT_M;
             if (image) { rect.width = rect.height = DEFAULT_RECT_SIZE; rect.x = (image.width - DEFAULT_RECT_SIZE) / 2; rect.y = (image.height - DEFAULT_RECT_SIZE) / 2; }
             else rect = { x: 100, y: 100, width: DEFAULT_RECT_SIZE, height: DEFAULT_RECT_SIZE };
-            aspectLocked = false; $('aspectLock').classList.remove('active'); updateLockIcon($('aspectLock'), false);
+            aspectLocked = false;
+            setLockState('aspectLock', false);
             lockedAspectRatio = 1;
-            render(); autoSave();
+            update();
         });
 
         // Drag and drop
@@ -744,7 +702,7 @@ ${paths}</svg>`;
                     image = img;
                     imageSrc = e.target.result;
                     resizeView();
-                    render(); autoSave();
+                    update();
                 };
                 img.src = e.target.result;
             };
@@ -791,19 +749,6 @@ ${paths}</svg>`;
         }
 
         // Hexagon helper functions - stretched to fit grid
-        function drawHexPath(ctx, cx, cy, halfW, halfH) {
-            // Flat-top hexagon, stretched to fit halfW (horizontal) and halfH (vertical)
-            ctx.beginPath();
-            // 6 vertices of flat-top hex: right, top-right, top-left, left, bottom-left, bottom-right
-            ctx.moveTo(cx + halfW, cy);
-            ctx.lineTo(cx + halfW * 0.5, cy - halfH);
-            ctx.lineTo(cx - halfW * 0.5, cy - halfH);
-            ctx.lineTo(cx - halfW, cy);
-            ctx.lineTo(cx - halfW * 0.5, cy + halfH);
-            ctx.lineTo(cx + halfW * 0.5, cy + halfH);
-            ctx.closePath();
-        }
-
         function getHexGeometry(n, m, rectW, rectH) {
             // Calculate hex dimensions to perfectly tile the rect
             // Flat-top hex: horizontal spacing = 1.5 * hexW, vertical spacing = hexH (with 0.5 offset for odd cols)
@@ -828,51 +773,23 @@ ${paths}</svg>`;
         }
 
         function sampleHexCell(imgData, cx, cy, halfW, halfH, width, height) {
-            const x0 = Math.max(0, Math.floor(cx - halfW));
-            const y0 = Math.max(0, Math.floor(cy - halfH));
-            const x1 = Math.min(width, Math.ceil(cx + halfW));
-            const y1 = Math.min(height, Math.ceil(cy + halfH));
-
             if (sampleMode === 'center') {
                 const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
-                if (idx >= 0 && idx < imgData.data.length - 3) {
-                    return [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
-                }
-                return null;
+                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
             }
-
+            const x0 = Math.max(0, Math.floor(cx - halfW)), y0 = Math.max(0, Math.floor(cy - halfH));
+            const x1 = Math.min(width, Math.ceil(cx + halfW)), y1 = Math.min(height, Math.ceil(cy + halfH));
             const pixels = [];
-            for (let y = y0; y < y1; y++) {
-                for (let x = x0; x < x1; x++) {
-                    if (pointInHex(x + 0.5, y + 0.5, cx, cy, halfW, halfH)) {
-                        const idx = (y * width + x) * 4;
-                        pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
-                    }
+            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                if (pointInHex(x + 0.5, y + 0.5, cx, cy, halfW, halfH)) {
+                    const idx = (y * width + x) * 4;
+                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
                 }
             }
-            if (!pixels.length) return null;
-
-            if (sampleMode === 'mean') {
-                const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
-                return sum.map(v => v / pixels.length);
-            }
-return medianColor(pixels);
+            return aggregatePixels(pixels);
         }
 
-        // Pointy-top hexagon helpers (rotated 90 degrees from flat-top)
-        function drawHexVPath(ctx, cx, cy, halfW, halfH) {
-            // Pointy-top hexagon, stretched to fit halfW (horizontal) and halfH (vertical)
-            ctx.beginPath();
-            // 6 vertices: top, top-right, bottom-right, bottom, bottom-left, top-left
-            ctx.moveTo(cx, cy - halfH);
-            ctx.lineTo(cx + halfW, cy - halfH * 0.5);
-            ctx.lineTo(cx + halfW, cy + halfH * 0.5);
-            ctx.lineTo(cx, cy + halfH);
-            ctx.lineTo(cx - halfW, cy + halfH * 0.5);
-            ctx.lineTo(cx - halfW, cy - halfH * 0.5);
-            ctx.closePath();
-        }
-
+        // Pointy-top hexagon helpers
         function getHexVGeometry(n, m, rectW, rectH) {
             // Pointy-top hex: vertical spacing = 1.5 * hexH, horizontal spacing = hexW (with 0.5 offset for odd rows)
             const hexW = rectW / (n + 0.5);
@@ -896,46 +813,23 @@ return medianColor(pixels);
         }
 
         function sampleHexVCell(imgData, cx, cy, halfW, halfH, width, height) {
-            const x0 = Math.max(0, Math.floor(cx - halfW));
-            const y0 = Math.max(0, Math.floor(cy - halfH));
-            const x1 = Math.min(width, Math.ceil(cx + halfW));
-            const y1 = Math.min(height, Math.ceil(cy + halfH));
-
             if (sampleMode === 'center') {
                 const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
-                if (idx >= 0 && idx < imgData.data.length - 3) {
-                    return [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
-                }
-                return null;
+                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
             }
-
+            const x0 = Math.max(0, Math.floor(cx - halfW)), y0 = Math.max(0, Math.floor(cy - halfH));
+            const x1 = Math.min(width, Math.ceil(cx + halfW)), y1 = Math.min(height, Math.ceil(cy + halfH));
             const pixels = [];
-            for (let y = y0; y < y1; y++) {
-                for (let x = x0; x < x1; x++) {
-                    if (pointInHexV(x + 0.5, y + 0.5, cx, cy, halfW, halfH)) {
-                        const idx = (y * width + x) * 4;
-                        pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
-                    }
+            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                if (pointInHexV(x + 0.5, y + 0.5, cx, cy, halfW, halfH)) {
+                    const idx = (y * width + x) * 4;
+                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
                 }
             }
-            if (!pixels.length) return null;
-
-            if (sampleMode === 'mean') {
-                const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
-                return sum.map(v => v / pixels.length);
-            }
-return medianColor(pixels);
+            return aggregatePixels(pixels);
         }
 
-        // Triangle helper functions - stretched to fit grid
-        function drawTriPath(ctx, x0, y0, x1, y1, x2, y2) {
-            ctx.beginPath();
-            ctx.moveTo(x0, y0);
-            ctx.lineTo(x1, y1);
-            ctx.lineTo(x2, y2);
-            ctx.closePath();
-        }
-
+        // Triangle helper functions
         function getTriGeometry(n, m, rectW, rectH) {
             // n = columns of triangles (alternating up/down), m = rows
             // Each pair of triangles (up+down) spans one "cell width"
@@ -978,35 +872,20 @@ return medianColor(pixels);
 
         function sampleTriCell(imgData, tri, width, height) {
             const { x0, y0, x1, y1, x2, y2, cx, cy } = tri;
-            const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2)));
-            const maxX = Math.min(width, Math.ceil(Math.max(x0, x1, x2)));
-            const minY = Math.max(0, Math.floor(Math.min(y0, y1, y2)));
-            const maxY = Math.min(height, Math.ceil(Math.max(y0, y1, y2)));
-
             if (sampleMode === 'center') {
                 const idx = (Math.floor(cy) * width + Math.floor(cx)) * 4;
-                if (idx >= 0 && idx < imgData.data.length - 3) {
-                    return [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
-                }
-                return null;
+                return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
             }
-
+            const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2))), maxX = Math.min(width, Math.ceil(Math.max(x0, x1, x2)));
+            const minY = Math.max(0, Math.floor(Math.min(y0, y1, y2))), maxY = Math.min(height, Math.ceil(Math.max(y0, y1, y2)));
             const pixels = [];
-            for (let y = minY; y < maxY; y++) {
-                for (let x = minX; x < maxX; x++) {
-                    if (pointInTriangle(x + 0.5, y + 0.5, x0, y0, x1, y1, x2, y2)) {
-                        const idx = (y * width + x) * 4;
-                        pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
-                    }
+            for (let y = minY; y < maxY; y++) for (let x = minX; x < maxX; x++) {
+                if (pointInTriangle(x + 0.5, y + 0.5, x0, y0, x1, y1, x2, y2)) {
+                    const idx = (y * width + x) * 4;
+                    pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
                 }
             }
-            if (!pixels.length) return null;
-
-            if (sampleMode === 'mean') {
-                const sum = pixels.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]);
-                return sum.map(v => v / pixels.length);
-            }
-return medianColor(pixels);
+            return aggregatePixels(pixels);
         }
 
         // Cache image data to avoid recreating every frame
@@ -1110,16 +989,8 @@ return medianColor(pixels);
                 return [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
             }
 
-            function getFill(color) {
-                if (!color) return 'none';
-                if (chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance) {
-                    return 'transparent';
-                }
-                return `rgb(${color[0]|0},${color[1]|0},${color[2]|0})`;
-            }
-
             function setTileStyle(el, fill) {
-                el.setAttribute('fill', fill);
+                el.setAttribute('fill', fill || 'none');
                 el.setAttribute('fill-opacity', gridOpacity);
                 el.setAttribute('stroke', gridColorRgba);
             }
@@ -1127,45 +998,37 @@ return medianColor(pixels);
             let idx = 0;
             if (tileMode === 'hex') {
                 const { hexW, hexH, halfW, halfH } = getHexGeometry(n, m, rect.width, rect.height);
-                for (let col = 0; col < n; col++) {
-                    for (let row = 0; row < m; row++) {
-                        const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, rect.x, rect.y);
-                        const el = tiles[idx++];
-                        el.setAttribute('points', `${cx + halfW},${cy} ${cx + halfW * 0.5},${cy - halfH} ${cx - halfW * 0.5},${cy - halfH} ${cx - halfW},${cy} ${cx - halfW * 0.5},${cy + halfH} ${cx + halfW * 0.5},${cy + halfH}`);
-                        setTileStyle(el, getFill(fastMode ? sampleCenter(cx, cy) : sampleHexCell(imgData, cx, cy, halfW, halfH, image.width, image.height)));
-                    }
+                for (let col = 0; col < n; col++) for (let row = 0; row < m; row++) {
+                    const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, rect.x, rect.y);
+                    const el = tiles[idx++];
+                    el.setAttribute('points', `${cx + halfW},${cy} ${cx + halfW * 0.5},${cy - halfH} ${cx - halfW * 0.5},${cy - halfH} ${cx - halfW},${cy} ${cx - halfW * 0.5},${cy + halfH} ${cx + halfW * 0.5},${cy + halfH}`);
+                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(cx, cy) : sampleHexCell(imgData, cx, cy, halfW, halfH, image.width, image.height), 'transparent'));
                 }
             } else if (tileMode === 'hexV') {
                 const { hexW, hexH, halfW, halfH } = getHexVGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) {
-                    for (let col = 0; col < n; col++) {
-                        const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, rect.x, rect.y);
-                        const el = tiles[idx++];
-                        el.setAttribute('points', `${cx},${cy - halfH} ${cx + halfW},${cy - halfH * 0.5} ${cx + halfW},${cy + halfH * 0.5} ${cx},${cy + halfH} ${cx - halfW},${cy + halfH * 0.5} ${cx - halfW},${cy - halfH * 0.5}`);
-                        setTileStyle(el, getFill(fastMode ? sampleCenter(cx, cy) : sampleHexVCell(imgData, cx, cy, halfW, halfH, image.width, image.height)));
-                    }
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, rect.x, rect.y);
+                    const el = tiles[idx++];
+                    el.setAttribute('points', `${cx},${cy - halfH} ${cx + halfW},${cy - halfH * 0.5} ${cx + halfW},${cy + halfH * 0.5} ${cx},${cy + halfH} ${cx - halfW},${cy + halfH * 0.5} ${cx - halfW},${cy - halfH * 0.5}`);
+                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(cx, cy) : sampleHexVCell(imgData, cx, cy, halfW, halfH, image.width, image.height), 'transparent'));
                 }
             } else if (tileMode === 'tri') {
                 const { triW, triH } = getTriGeometry(n, m, rect.width, rect.height);
-                for (let row = 0; row < m; row++) {
-                    for (let col = 0; col < n; col++) {
-                        const tri = getTriVertices(col, row, triW, triH, rect.x, rect.y);
-                        const el = tiles[idx++];
-                        el.setAttribute('points', `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`);
-                        setTileStyle(el, getFill(fastMode ? sampleCenter(tri.cx, tri.cy) : sampleTriCell(imgData, tri, image.width, image.height)));
-                    }
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const tri = getTriVertices(col, row, triW, triH, rect.x, rect.y);
+                    const el = tiles[idx++];
+                    el.setAttribute('points', `${tri.x0},${tri.y0} ${tri.x1},${tri.y1} ${tri.x2},${tri.y2}`);
+                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(tri.cx, tri.cy) : sampleTriCell(imgData, tri, image.width, image.height), 'transparent'));
                 }
             } else {
-                for (let row = 0; row < m; row++) {
-                    for (let col = 0; col < n; col++) {
-                        const x = rect.x + col * cellW, y = rect.y + row * cellH;
-                        const el = tiles[idx++];
-                        el.setAttribute('x', x);
-                        el.setAttribute('y', y);
-                        el.setAttribute('width', cellW);
-                        el.setAttribute('height', cellH);
-                        setTileStyle(el, getFill(fastMode ? sampleCenter(x + cellW / 2, y + cellH / 2) : sampleCell(imgData, x, y, x + cellW, y + cellH, image.width)));
-                    }
+                for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                    const x = rect.x + col * cellW, y = rect.y + row * cellH;
+                    const el = tiles[idx++];
+                    el.setAttribute('x', x);
+                    el.setAttribute('y', y);
+                    el.setAttribute('width', cellW);
+                    el.setAttribute('height', cellH);
+                    setTileStyle(el, colorToFill(fastMode ? sampleCenter(x + cellW / 2, y + cellH / 2) : sampleCell(imgData, x, y, x + cellW, y + cellH, image.width), 'transparent'));
                 }
             }
 
@@ -1235,18 +1098,11 @@ return medianColor(pixels);
                     const idx = (py * image.width + px) * 4;
                     chromaColor = [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]];
                     $('chromaColorPicker').value = rgbToHex(chromaColor);
-                    if (!chromaEnabled) {
-                        chromaEnabled = true;
-                        $('chromaToggle').classList.add('active');
-                        $('chromaToggle').querySelector('.iconify').dataset.icon = 'mdi:eye';
-                    }
+                    if (!chromaEnabled) setChromaEnabled(true);
                     updateChromaSwatch();
                 }
-                eyedropperMode = false;
-                $('eyedropperBtn').classList.remove('active');
-                mainSvg.style.cursor = 'default';
-                render();
-                autoSave();
+                setEyedropperMode(false);
+                update();
                 return;
             }
 
@@ -1301,67 +1157,21 @@ return medianColor(pixels);
 
         // Get snap units for each tile mode - how much to move per tile add/remove
         function getTileSnapUnits(n, m, w, h) {
-            if (tileMode === 'hex') {
-                // Flat-top hex: cols spaced at 0.75 * hexW, rows at hexH
-                const hexW = w / (n * 0.75 + 0.25);
-                const hexH = h / (m + 0.5);
-                return { dx: hexW * 0.75, dy: hexH };
-            } else if (tileMode === 'hexV') {
-                // Pointy-top hex: cols spaced at hexW, rows at 0.75 * hexH
-                const hexW = w / (n + 0.5);
-                const hexH = h / (m * 0.75 + 0.25);
-                return { dx: hexW, dy: hexH * 0.75 };
-            } else if (tileMode === 'tri') {
-                // Triangle: each col is half a triangle width
-                const triW = w / ((n + 1) / 2);
-                const triH = h / m;
-                return { dx: triW / 2, dy: triH };
-            } else {
-                // Square
-                return { dx: w / n, dy: h / m };
-            }
+            const g = TILE_GEOMETRY[tileMode];
+            const cellW = w / g.wF(n), cellH = h / g.hF(m);
+            return { dx: cellW * g.snapW, dy: cellH * g.snapH };
         }
 
         // Calculate new rect dimensions when adding/removing tiles
         function calcExpandedRect(newN, newM, anchorX, anchorY) {
-            // anchorX/anchorY: 0 = anchor at start (left/top), 1 = anchor at end (right/bottom)
-            let newW, newH, newX = rectStart.x, newY = rectStart.y;
-
-            if (tileMode === 'hex') {
-                // Flat-top hex: width = hexW * (n * 0.75 + 0.25)
-                const hexW = rectStart.width / (nStart * 0.75 + 0.25);
-                const hexH = rectStart.height / (mStart + 0.5);
-                newW = hexW * (newN * 0.75 + 0.25);
-                newH = hexH * (newM + 0.5);
-                if (anchorX) newX = rectStart.x + rectStart.width - newW;
-                if (anchorY) newY = rectStart.y + rectStart.height - newH;
-            } else if (tileMode === 'hexV') {
-                // Pointy-top hex: height = hexH * (m * 0.75 + 0.25)
-                const hexW = rectStart.width / (nStart + 0.5);
-                const hexH = rectStart.height / (mStart * 0.75 + 0.25);
-                newW = hexW * (newN + 0.5);
-                newH = hexH * (newM * 0.75 + 0.25);
-                if (anchorX) newX = rectStart.x + rectStart.width - newW;
-                if (anchorY) newY = rectStart.y + rectStart.height - newH;
-            } else if (tileMode === 'tri') {
-                // Triangle: width = triW * ((n + 1) / 2)
-                const triW = rectStart.width / ((nStart + 1) / 2);
-                const triH = rectStart.height / mStart;
-                newW = triW * ((newN + 1) / 2);
-                newH = triH * newM;
-                if (anchorX) newX = rectStart.x + rectStart.width - newW;
-                if (anchorY) newY = rectStart.y + rectStart.height - newH;
-            } else {
-                // Square
-                const cellW = rectStart.width / nStart;
-                const cellH = rectStart.height / mStart;
-                newW = newN * cellW;
-                newH = newM * cellH;
-                if (anchorX) newX = rectStart.x + rectStart.width - newW;
-                if (anchorY) newY = rectStart.y + rectStart.height - newH;
-            }
-
-            return { x: newX, y: newY, width: newW, height: newH };
+            const g = TILE_GEOMETRY[tileMode];
+            const cellW = rectStart.width / g.wF(nStart), cellH = rectStart.height / g.hF(mStart);
+            const newW = cellW * g.wF(newN), newH = cellH * g.hF(newM);
+            return {
+                x: anchorX ? rectStart.x + rectStart.width - newW : rectStart.x,
+                y: anchorY ? rectStart.y + rectStart.height - newH : rectStart.y,
+                width: newW, height: newH
+            };
         }
 
         function handleExpandResize(dx, dy) {
@@ -1490,19 +1300,18 @@ return medianColor(pixels);
             if ('123'.includes(e.key)) {
                 pushUndo();
                 const opacity = { '1': 0, '2': 50, '3': 100 }[e.key];
-                $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == opacity));
-                gridOpacity = opacity / 100; render(); autoSave();
+                setBtnGroupValue('opacityBtns', opacity);
+                gridOpacity = opacity / 100;
+                update();
             } else if (e.key.toLowerCase() === 's') { e.preventDefault(); $('saveBtn').click(); }
             else if (e.key.toLowerCase() === 'g') { e.preventDefault(); $('saveSvgBtn').click(); }
             else if (e.key.toLowerCase() === 'x') { $('expandMode').click(); }
             else if (e.key.toLowerCase() === 'h') {
-                // Cycle tile modes: square -> hex -> hexV -> tri -> square
                 pushUndo();
                 const modes = ['square', 'hex', 'hexV', 'tri'];
-                const nextIdx = (modes.indexOf(tileMode) + 1) % modes.length;
-                tileMode = modes[nextIdx];
-                $('tileBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value === tileMode));
-                render(); autoSave();
+                tileMode = modes[(modes.indexOf(tileMode) + 1) % modes.length];
+                setBtnGroupValue('tileBtns', tileMode);
+                update();
             }
             else if (e.key.toLowerCase() === 'e') { $('eyedropperBtn').click(); }
             else if (e.key.toLowerCase() === 'c') { $('chromaToggle').click(); }
