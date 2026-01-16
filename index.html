@@ -762,14 +762,17 @@ ${paths}</svg>`;
 
         function updateView() {
             if (!image) return;
-            // Apply pan/zoom via CSS transform on wrapper (GPU accelerated)
             const cr = container.getBoundingClientRect();
-            const displayW = image.width * canvasScale;
-            const displayH = image.height * canvasScale;
-            // Center offset
-            const centerX = (cr.width - displayW) / 2;
-            const centerY = (cr.height - displayH) / 2;
-            wrapper.style.transform = `translate(${centerX + viewOffset.x}px, ${centerY + viewOffset.y}px) scale(${viewZoom})`;
+            // Calculate viewBox for pan/zoom (SVG re-renders at full res)
+            const vbW = image.width / viewZoom;
+            const vbH = image.height / viewZoom;
+            const vbX = -viewOffset.x / (canvasScale * viewZoom);
+            const vbY = -viewOffset.y / (canvasScale * viewZoom);
+            mainSvg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
+            // Size SVG to fill container
+            mainSvg.style.width = cr.width + 'px';
+            mainSvg.style.height = cr.height + 'px';
+            wrapper.style.transform = '';
         }
 
         function colorDistance(r1, g1, b1, r2, g2, b2) {
@@ -1107,26 +1110,23 @@ return medianColor(pixels);
                 content += `<rect x="${hx}" y="${hy}" width="${hs}" height="${hs}" fill="${gridColorRgb}"/>`;
             });
 
-            // Set SVG size and content
-            const displayW = image.width * canvasScale;
-            const displayH = image.height * canvasScale;
-            mainSvg.setAttribute('width', image.width);
-            mainSvg.setAttribute('height', image.height);
-            mainSvg.setAttribute('viewBox', `0 0 ${image.width} ${image.height}`);
-            mainSvg.style.width = displayW + 'px';
-            mainSvg.style.height = displayH + 'px';
+            // Set SVG content (updateView handles viewBox and size)
             mainSvg.innerHTML = content;
+            updateView();
 
             updateInfoField();
         }
 
         function getMousePos(e) {
-            // Get position relative to the transformed canvas
-            const wr = wrapper.getBoundingClientRect();
-            // wrapper is scaled by viewZoom, so divide by it
+            // Convert screen coords to image coords using viewBox
+            const sr = mainSvg.getBoundingClientRect();
+            const vbW = image.width / viewZoom;
+            const vbH = image.height / viewZoom;
+            const vbX = -viewOffset.x / (canvasScale * viewZoom);
+            const vbY = -viewOffset.y / (canvasScale * viewZoom);
             return {
-                x: (e.clientX - wr.left) / (canvasScale * viewZoom),
-                y: (e.clientY - wr.top) / (canvasScale * viewZoom)
+                x: vbX + (e.clientX - sr.left) / sr.width * vbW,
+                y: vbY + (e.clientY - sr.top) / sr.height * vbH
             };
         }
 
