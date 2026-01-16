@@ -288,6 +288,7 @@
         const DEFAULT_N = 16, DEFAULT_M = 16;
         const DEFAULT_RECT_SIZE = 200;
         const MIN_RECT_SIZE = 20;
+        const RETINA = window.devicePixelRatio || 1;
 
         let image = null;
         let gridOpacity = 0.5;
@@ -324,8 +325,8 @@
             });
         }
 
-        setupBtnGroup('opacityBtns', val => gridOpacity = parseInt(val) / 100);
-        setupBtnGroup('sampleBtns', val => sampleMode = val);
+        setupBtnGroup('opacityBtns', val => { pushUndo(); gridOpacity = parseInt(val) / 100; });
+        setupBtnGroup('sampleBtns', val => { pushUndo(); sampleMode = val; });
 
         // Unified slider/input handling
         function syncNM(source, newVal) {
@@ -371,11 +372,11 @@
             });
         }
 
-        setupToggle('aspectLock', () => aspectLocked, v => { aspectLocked = v; if (v) lockedAspectRatio = rect.width / rect.height; }, updateLockIcon);
-        setupToggle('resolutionLock', () => resolutionLocked, v => resolutionLocked = v, updateLockIcon);
-        setupToggle('expandMode', () => expandModeOn, v => expandModeOn = v);
+        setupToggle('aspectLock', () => aspectLocked, v => { pushUndo(); aspectLocked = v; if (v) lockedAspectRatio = rect.width / rect.height; }, updateLockIcon);
+        setupToggle('resolutionLock', () => resolutionLocked, v => { pushUndo(); resolutionLocked = v; }, updateLockIcon);
+        setupToggle('expandMode', () => expandModeOn, v => { pushUndo(); expandModeOn = v; });
 
-        setupBtnGroup('tileBtns', val => { tileMode = val; render(); });
+        setupBtnGroup('tileBtns', val => { pushUndo(); tileMode = val; render(); });
 
         // Chroma key controls
         function updateChromaSwatch() {
@@ -394,6 +395,7 @@
         }
 
         $('chromaToggle').addEventListener('click', () => {
+            pushUndo();
             chromaEnabled = !chromaEnabled;
             $('chromaToggle').classList.toggle('active', chromaEnabled);
             $('chromaToggle').querySelector('.iconify').dataset.icon = chromaEnabled ? 'mdi:eye' : 'mdi:eye-off';
@@ -407,7 +409,9 @@
             $('chromaColorPicker').click();
         });
 
+        let chromaPickerUndoPushed = false;
         $('chromaColorPicker').addEventListener('input', e => {
+            if (!chromaPickerUndoPushed) { pushUndo(); chromaPickerUndoPushed = true; }
             chromaColor = hexToRgb(e.target.value);
             if (!chromaEnabled) {
                 chromaEnabled = true;
@@ -418,6 +422,7 @@
             render();
             autoSave();
         });
+        $('chromaColorPicker').addEventListener('change', () => { chromaPickerUndoPushed = false; });
 
         $('eyedropperBtn').addEventListener('click', () => {
             eyedropperMode = !eyedropperMode;
@@ -425,12 +430,15 @@
             canvas.style.cursor = eyedropperMode ? 'crosshair' : 'default';
         });
 
+        let chromaToleranceUndoPushed = false;
+        $('chromaTolerance').addEventListener('mousedown', () => { pushUndo(); chromaToleranceUndoPushed = true; });
         $('chromaTolerance').addEventListener('input', e => {
             chromaTolerance = parseInt(e.target.value);
             $('chromaToleranceVal').textContent = chromaTolerance;
             render();
             autoSave();
         });
+        $('chromaTolerance').addEventListener('mouseup', () => { chromaToleranceUndoPushed = false; });
 
         updateChromaSwatch();
 
@@ -706,13 +714,21 @@ ${paths}</svg>`;
             reader.readAsDataURL(file);
         }
 
+        let canvasScale = 1; // scale from image coords to display coords
+
         function resizeCanvas() {
             if (!image) return;
-            canvas.width = image.width; canvas.height = image.height;
             const cr = container.getBoundingClientRect();
-            const scale = Math.min((cr.width - 40) / image.width, (cr.height - 40) / image.height, 1);
-            canvas.style.width = image.width * scale + 'px';
-            canvas.style.height = image.height * scale + 'px';
+            canvasScale = Math.min((cr.width - 40) / image.width, (cr.height - 40) / image.height, 1);
+            const displayW = image.width * canvasScale;
+            const displayH = image.height * canvasScale;
+            // Set canvas size for retina: internal pixels = display pixels * devicePixelRatio
+            canvas.width = displayW * RETINA;
+            canvas.height = displayH * RETINA;
+            canvas.style.width = displayW + 'px';
+            canvas.style.height = displayH + 'px';
+            // Scale context so we can draw in image coordinates
+            ctx.setTransform(canvasScale * RETINA, 0, 0, canvasScale * RETINA, 0, 0);
         }
 
         function colorDistance(r1, g1, b1, r2, g2, b2) {
@@ -946,37 +962,45 @@ ${paths}</svg>`;
 
         function render() {
             if (!image) return;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+            // Draw in image coordinates (transform handles scaling to canvas)
+            ctx.clearRect(0, 0, image.width, image.height);
+            ctx.drawImage(image, 0, 0, image.width, image.height);
 
-            // Apply chroma key (hard threshold)
+            // Get image data at original resolution for sampling
+            const sampleCanvas = document.createElement('canvas');
+            sampleCanvas.width = image.width;
+            sampleCanvas.height = image.height;
+            const sampleCtx = sampleCanvas.getContext('2d');
+            sampleCtx.drawImage(image, 0, 0);
+            const imgData = sampleCtx.getImageData(0, 0, image.width, image.height);
+
+            // Apply chroma key (hard threshold) to display
             if (chromaEnabled) {
-                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                const data = imgData.data;
+                const displayData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = displayData.data;
                 const [cr, cg, cb] = chromaColor;
                 for (let i = 0; i < data.length; i += 4) {
                     if (colorDistance(data[i], data[i + 1], data[i + 2], cr, cg, cb) <= chromaTolerance) {
                         data[i + 3] = 0;
                     }
                 }
-                ctx.putImageData(imgData, 0, 0);
+                ctx.putImageData(displayData, 0, 0);
             }
 
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
             const cellW = rect.width / n, cellH = rect.height / m;
-            const scale = canvas.width / canvas.getBoundingClientRect().width;
+            const lineWidth = 1 / canvasScale; // 1 screen pixel in image coords
 
             if (tileMode === 'hex') {
                 // Flat-top hexagonal grid rendering
                 const { hexW, hexH, halfW, halfH } = getHexGeometry(n, m, rect.width, rect.height);
-                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
                 if (gridOpacity > 0) {
                     ctx.save(); ctx.globalAlpha = gridOpacity;
                     for (let col = 0; col < n; col++) {
                         for (let row = 0; row < m; row++) {
                             const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, rect.x, rect.y);
-                            const color = sampleHexCell(imgData, cx, cy, halfW, halfH, canvas.width, canvas.height);
+                            const color = sampleHexCell(imgData, cx, cy, halfW, halfH, image.width, image.height);
                             if (color) {
                                 ctx.fillStyle = `rgb(${color.map(Math.round).join(',')})`;
                                 drawHexPath(ctx, cx, cy, halfW, halfH);
@@ -988,7 +1012,7 @@ ${paths}</svg>`;
                 }
 
                 // Hex grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = scale;
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
                 for (let col = 0; col < n; col++) {
                     for (let row = 0; row < m; row++) {
                         const { x: cx, y: cy } = getHexCenter(col, row, hexW, hexH, rect.x, rect.y);
@@ -999,14 +1023,13 @@ ${paths}</svg>`;
             } else if (tileMode === 'hexV') {
                 // Pointy-top hexagonal grid rendering
                 const { hexW, hexH, halfW, halfH } = getHexVGeometry(n, m, rect.width, rect.height);
-                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
                 if (gridOpacity > 0) {
                     ctx.save(); ctx.globalAlpha = gridOpacity;
                     for (let row = 0; row < m; row++) {
                         for (let col = 0; col < n; col++) {
                             const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, rect.x, rect.y);
-                            const color = sampleHexVCell(imgData, cx, cy, halfW, halfH, canvas.width, canvas.height);
+                            const color = sampleHexVCell(imgData, cx, cy, halfW, halfH, image.width, image.height);
                             if (color) {
                                 ctx.fillStyle = `rgb(${color.map(Math.round).join(',')})`;
                                 drawHexVPath(ctx, cx, cy, halfW, halfH);
@@ -1018,7 +1041,7 @@ ${paths}</svg>`;
                 }
 
                 // Hex grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = scale;
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
                 for (let row = 0; row < m; row++) {
                     for (let col = 0; col < n; col++) {
                         const { x: cx, y: cy } = getHexVCenter(col, row, hexW, hexH, rect.x, rect.y);
@@ -1029,14 +1052,13 @@ ${paths}</svg>`;
             } else if (tileMode === 'tri') {
                 // Triangle grid rendering - stretched to perfectly tile the rect
                 const { triW, triH } = getTriGeometry(n, m, rect.width, rect.height);
-                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
                 if (gridOpacity > 0) {
                     ctx.save(); ctx.globalAlpha = gridOpacity;
                     for (let row = 0; row < m; row++) {
                         for (let col = 0; col < n; col++) {
                             const tri = getTriVertices(col, row, triW, triH, rect.x, rect.y);
-                            const color = sampleTriCell(imgData, tri, canvas.width, canvas.height);
+                            const color = sampleTriCell(imgData, tri, image.width, image.height);
                             if (color) {
                                 ctx.fillStyle = `rgb(${color.map(Math.round).join(',')})`;
                                 drawTriPath(ctx, tri.x0, tri.y0, tri.x1, tri.y1, tri.x2, tri.y2);
@@ -1048,7 +1070,7 @@ ${paths}</svg>`;
                 }
 
                 // Triangle grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = scale;
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
                 for (let row = 0; row < m; row++) {
                     for (let col = 0; col < n; col++) {
                         const tri = getTriVertices(col, row, triW, triH, rect.x, rect.y);
@@ -1059,19 +1081,18 @@ ${paths}</svg>`;
             } else {
                 // Square grid rendering
                 if (gridOpacity > 0) {
-                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     ctx.save(); ctx.globalAlpha = gridOpacity;
                     for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
                         const cellX = rect.x + col * cellW, cellY = rect.y + row * cellH;
-                        if (cellX + cellW < 0 || cellX > canvas.width || cellY + cellH < 0 || cellY > canvas.height) continue;
-                        const color = sampleCell(imgData, cellX, cellY, cellX + cellW, cellY + cellH, canvas.width);
+                        if (cellX + cellW < 0 || cellX > image.width || cellY + cellH < 0 || cellY > image.height) continue;
+                        const color = sampleCell(imgData, cellX, cellY, cellX + cellW, cellY + cellH, image.width);
                         if (color) { ctx.fillStyle = `rgb(${color.map(Math.round).join(',')})`; ctx.fillRect(cellX, cellY, cellW + 0.5, cellH + 0.5); }
                     }
                     ctx.restore();
                 }
 
                 // Grid lines
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = scale;
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = lineWidth;
                 ctx.beginPath();
                 for (let i = 0; i <= n; i++) { const x = rect.x + i * cellW; ctx.moveTo(x, rect.y); ctx.lineTo(x, rect.y + rect.height); }
                 for (let i = 0; i <= m; i++) { const y = rect.y + i * cellH; ctx.moveTo(rect.x, y); ctx.lineTo(rect.x + rect.width, y); }
@@ -1079,10 +1100,10 @@ ${paths}</svg>`;
             }
 
             // Border and handles
-            ctx.strokeStyle = '#e94560'; ctx.lineWidth = 2 * scale;
+            ctx.strokeStyle = '#e94560'; ctx.lineWidth = 2 * lineWidth;
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
             ctx.fillStyle = '#e94560';
-            const hs = 10 * scale;
+            const hs = 10 / canvasScale; // 10 screen pixels in image coords
             [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => {
                 ctx.fillRect(rect.x + cx * rect.width - hs / 2, rect.y + cy * rect.height - hs / 2, hs, hs);
             });
@@ -1092,11 +1113,12 @@ ${paths}</svg>`;
 
         function getMousePos(e) {
             const cr = canvas.getBoundingClientRect();
-            return { x: (e.clientX - cr.left) * canvas.width / cr.width, y: (e.clientY - cr.top) * canvas.height / cr.height };
+            // Convert screen coords to image coords
+            return { x: (e.clientX - cr.left) / canvasScale, y: (e.clientY - cr.top) / canvasScale };
         }
 
         function getHitZone(pos) {
-            const hs = 15 * canvas.width / canvas.getBoundingClientRect().width;
+            const hs = 15 / canvasScale; // 15 screen pixels converted to image coords
             const corners = [['tl', 0, 0], ['tr', 1, 0], ['bl', 0, 1], ['br', 1, 1]];
             for (const [id, cx, cy] of corners) {
                 if (Math.abs(pos.x - (rect.x + cx * rect.width)) < hs && Math.abs(pos.y - (rect.y + cy * rect.height)) < hs) return id;
@@ -1146,8 +1168,12 @@ ${paths}</svg>`;
         canvas.addEventListener('mousemove', e => {
             const pos = getMousePos(e);
             canvas.style.cursor = eyedropperMode ? 'crosshair' : (CURSORS[getHitZone(pos)] || 'default');
+        });
+
+        window.addEventListener('mousemove', e => {
             if (!dragging) return;
 
+            const pos = getMousePos(e);
             let dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
             if (e.shiftKey) { dx /= 10; dy /= 10; }
             if (e.ctrlKey || e.metaKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
@@ -1165,10 +1191,14 @@ ${paths}</svg>`;
                 rect.x = newX; rect.y = newY;
             } else if (expandModeOn) {
                 handleExpandResize(dx, dy);
-            } else if (aspectLocked) {
-                handleAspectResize(dx, dy);
             } else {
-                handleFreeResize(dx, dy);
+                // Edges always use free resize (axis-locked), corners use aspect resize if locked
+                const isEdge = ['left', 'right', 'top', 'bottom'].includes(dragging);
+                if (aspectLocked && !isEdge) {
+                    handleAspectResize(dx, dy);
+                } else {
+                    handleFreeResize(dx, dy);
+                }
             }
             render();
         });
@@ -1240,7 +1270,6 @@ ${paths}</svg>`;
 
         function handleExpandResize(dx, dy) {
             const snap = getTileSnapUnits(nStart, mStart, rectStart.width, rectStart.height);
-            const cellDx = Math.round(dx / snap.dx), cellDy = Math.round(dy / snap.dy);
 
             // Direction multipliers: [dxSign, dySign, anchorX, anchorY]
             const cfg = {
@@ -1250,15 +1279,17 @@ ${paths}</svg>`;
             if (!cfg) return;
 
             const [dxs, dys, ax, ay] = cfg;
+
+            // Only compute cell deltas for axes that this handle affects
+            const cellDx = dxs ? Math.round(dx / snap.dx) : 0;
+            const cellDy = dys ? Math.round(dy / snap.dy) : 0;
+
             const newN = Math.min(Math.max(1, nStart + dxs * cellDx), MAX_GRID);
             const newM = Math.min(Math.max(1, mStart + dys * cellDy), MAX_GRID);
 
             const newRect = calcExpandedRect(newN, newM, ax, ay);
-            if (dxs) { rect.width = newRect.width; rect.x = newRect.x; }
-            if (dys) { rect.height = newRect.height; rect.y = newRect.y; }
-
-            if (dxs) { nSlider.value = nInput.value = newN; }
-            if (dys) { mSlider.value = mInput.value = newM; }
+            if (dxs) { rect.width = newRect.width; rect.x = newRect.x; nSlider.value = nInput.value = newN; }
+            if (dys) { rect.height = newRect.height; rect.y = newRect.y; mSlider.value = mInput.value = newM; }
         }
 
         function handleAspectResize(dx, dy) {
@@ -1285,11 +1316,13 @@ ${paths}</svg>`;
                     rect.width = newW; rect.height = newH; rect.y = centerY - newH / 2;
                     if (fromStart) rect.x = rectStart.x + rectStart.width - newW;
                 } else {
+                    // Vertical edge - anchor top for bottom, anchor bottom for top
                     const newH = Math.max(MIN_RECT_SIZE, rectStart.height + (fromStart ? -delta : delta));
                     const newW = newH * lockedAspectRatio;
                     const centerX = rectStart.x + rectStart.width / 2;
                     rect.width = newW; rect.height = newH; rect.x = centerX - newW / 2;
                     if (fromStart) rect.y = rectStart.y + rectStart.height - newH;
+                    // else: rect.y stays at rectStart.y (anchor top edge)
                 }
             }
         }
@@ -1306,13 +1339,13 @@ ${paths}</svg>`;
             if (isTop) { const nh = Math.max(MIN_RECT_SIZE, rectStart.height - dy); rect.y = rectStart.y + rectStart.height - nh; rect.height = nh; }
         }
 
-        canvas.addEventListener('mouseup', () => { if (dragging) autoSave(); dragging = null; });
-        canvas.addEventListener('mouseleave', () => { dragging = null; });
+        window.addEventListener('mouseup', () => { if (dragging) autoSave(); dragging = null; });
         window.addEventListener('resize', () => { if (image) { resizeCanvas(); render(); } });
 
         // Keyboard shortcuts
         window.addEventListener('keydown', e => {
             if ('123'.includes(e.key)) {
+                pushUndo();
                 const opacity = { '1': 0, '2': 50, '3': 100 }[e.key];
                 $('opacityBtns').querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == opacity));
                 gridOpacity = opacity / 100; render(); autoSave();
@@ -1321,6 +1354,7 @@ ${paths}</svg>`;
             else if (e.key.toLowerCase() === 'x') { $('expandMode').click(); }
             else if (e.key.toLowerCase() === 'h') {
                 // Cycle tile modes: square -> hex -> hexV -> tri -> square
+                pushUndo();
                 const modes = ['square', 'hex', 'hexV', 'tri'];
                 const nextIdx = (modes.indexOf(tileMode) + 1) % modes.length;
                 tileMode = modes[nextIdx];
