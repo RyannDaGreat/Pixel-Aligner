@@ -128,10 +128,22 @@
             background: var(--glass-highlight);
             color: var(--text-primary);
         }
+        .icon-btn:active {
+            transform: scale(0.9);
+        }
         .icon-btn.active {
             color: var(--accent);
             border-color: var(--accent);
             box-shadow: 0 0 8px var(--accent-glow);
+        }
+        .icon-btn.bounce {
+            animation: bounce-pulse 0.3s ease;
+        }
+        @keyframes bounce-pulse {
+            0% { transform: scale(1); }
+            30% { transform: scale(0.85); }
+            60% { transform: scale(1.1); }
+            100% { transform: scale(1); }
         }
         .btn-group {
             display: flex;
@@ -139,18 +151,31 @@
             background: rgba(0, 0, 0, 0.2);
             padding: 3px;
             border-radius: 8px;
+            position: relative;
+        }
+        .btn-group-indicator {
+            position: absolute;
+            top: 3px;
+            bottom: 3px;
+            background: var(--accent);
+            border-radius: 6px;
+            transition: left 0.2s ease, width 0.2s ease;
+            z-index: 0;
+            box-shadow: 0 0 8px var(--accent-glow);
         }
         .btn-group .btn {
             border: none;
             background: transparent;
             backdrop-filter: none;
+            position: relative;
+            z-index: 1;
         }
         .btn-group .btn:hover {
             background: var(--glass-bg);
         }
         .btn-group .btn.active {
-            background: var(--accent);
-            box-shadow: 0 0 8px var(--accent-glow);
+            background: transparent;
+            box-shadow: none;
         }
         .slider-group { display: flex; align-items: center; gap: 8px; }
         .slider-pair { display: flex; flex-direction: column; gap: 6px; }
@@ -602,7 +627,9 @@
         function update() { render(); autoSave(); }
 
         function setBtnGroupValue(groupId, value) {
-            $(groupId).querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == value));
+            const group = $(groupId);
+            group.querySelectorAll('.btn').forEach(b => b.classList.toggle('active', b.dataset.value == value));
+            updateIndicator(group);
         }
 
         function setChromaEnabled(enabled) {
@@ -853,12 +880,32 @@
         }
 
         // Helper to set up exclusive button groups
+        // Sliding indicator for btn-groups
+        function updateIndicator(group) {
+            const active = group.querySelector('.btn.active');
+            const indicator = group.querySelector('.btn-group-indicator');
+            if (active && indicator) {
+                indicator.style.left = active.offsetLeft + 'px';
+                indicator.style.width = active.offsetWidth + 'px';
+            }
+        }
+
+        function initBtnGroupIndicators() {
+            document.querySelectorAll('.btn-group').forEach(group => {
+                const indicator = document.createElement('div');
+                indicator.className = 'btn-group-indicator';
+                group.insertBefore(indicator, group.firstChild);
+                updateIndicator(group);
+            });
+        }
+
         function setupBtnGroup(containerId, onChange) {
             const container = $(containerId);
             container.querySelectorAll('.btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     container.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
+                    updateIndicator(container);
                     onChange(btn.dataset.value);
                     update();
                 });
@@ -886,20 +933,25 @@
         nInput.addEventListener('input', () => syncNM('n', parseInt(nInput.value)));
         mInput.addEventListener('input', () => syncNM('m', parseInt(mInput.value)));
 
-        function setupToggle(btnId, getter, setter, useLockIcon = false) {
+        function setupToggle(btnId, getter, setter, useLockIcon = false, bounce = false) {
             const btn = $(btnId);
             btn.addEventListener('click', () => {
                 const newVal = !getter();
                 setter(newVal);
                 btn.classList.toggle('active', newVal);
                 if (useLockIcon) setLockState(btnId, newVal);
+                if (bounce) {
+                    btn.classList.remove('bounce');
+                    void btn.offsetWidth; // reflow to restart animation
+                    btn.classList.add('bounce');
+                }
                 autoSave();
             });
         }
 
         setupToggle('aspectLock', () => aspectLocked, v => { pushUndo(); aspectLocked = v; if (v) lockedAspectRatio = rect.width / rect.height; }, true);
         setupToggle('resolutionLock', () => resolutionLocked, v => { pushUndo(); resolutionLocked = v; }, true);
-        setupToggle('expandMode', () => expandModeOn, v => { pushUndo(); expandModeOn = v; });
+        setupToggle('expandMode', () => expandModeOn, v => { pushUndo(); expandModeOn = v; }, false, true);
 
         setupBtnGroup('tileBtns', val => { pushUndo(); tileMode = val; update(); });
 
@@ -1709,6 +1761,7 @@
         });
 
         loadFromLocalStorage();
+        initBtnGroupIndicators();
     </script>
 </body>
 </html>
