@@ -631,7 +631,7 @@
             'solo':  { fillOpacity: 1,   showStroke: false, showImage: false }
         };
         let sampleMode = 'center';
-        let rect = { x: 100, y: 100, width: DEFAULT_RECT_SIZE, height: DEFAULT_RECT_SIZE };
+        let rect = { x: 100, y: 100, width: DEFAULT_RECT_SIZE, height: DEFAULT_RECT_SIZE, flipX: false, flipY: false };
         let dragging = null;
         let dragStart = { x: 0, y: 0 };
         let rectStart = { x: 0, y: 0, width: 0, height: 0 };
@@ -1923,6 +1923,11 @@
                 }
             }
 
+            // Apply flip transform to tiles
+            const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+            const sx = rect.flipX ? -1 : 1, sy = rect.flipY ? -1 : 1;
+            svgElements.tiles.setAttribute('transform', `translate(${cx},${cy}) scale(${sx},${sy}) translate(${-cx},${-cy})`);
+
             // Update border
             svgElements.border.setAttribute('x', rect.x);
             svgElements.border.setAttribute('y', rect.y);
@@ -2166,7 +2171,9 @@
             if (isTop) y0 = rectStart.y + dy;
             if (isBottom) y1 = rectStart.y + rectStart.height + dy;
 
-            // Normalize so x0 < x1 and y0 < y1
+            // Track flip state and normalize
+            rect.flipX = x1 < x0;
+            rect.flipY = y1 < y0;
             rect.x = Math.min(x0, x1);
             rect.y = Math.min(y0, y1);
             rect.width = Math.abs(x1 - x0);
@@ -2278,7 +2285,6 @@
         // Apply glass styling to elements
         glassify('.btn:not(.btn-group .btn)');
         glassify('.icon-btn');
-        glassify('.chain-link-btn');
         glassify('.num-input');
         glassify('#infoField');
         glassify('.chroma-group');
