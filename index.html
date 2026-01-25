@@ -472,7 +472,11 @@
                 <button class="btn" data-value="triH" title="Horizontal triangles (rotated 90°)">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M1 7L13 1V13L1 7Z"/></svg>
                 </button>
+                <button class="btn" data-value="custom" id="customSvgBtn" title="Load custom SVG shape">
+                    <span class="iconify" data-icon="mdi:shape-plus" data-width="14"></span>
+                </button>
             </div>
+            <input type="file" id="customSvgInput" accept=".svg" style="display:none">
         </div>
         <div class="control-group">
             <button class="icon-btn" id="undoBtn" title="Undo (Ctrl+Z)">
@@ -848,8 +852,345 @@
                 },
                 setAttrs: (el, t) => el.setAttribute('points', `${t.x0},${t.y0} ${t.x1},${t.y1} ${t.x2},${t.y2}`),
                 svgTag: (t, sx, sy, ox, oy) => `<polygon points="${[(t.x0-ox)*sx,(t.y0-oy)*sy,(t.x1-ox)*sx,(t.y1-oy)*sy,(t.x2-ox)*sx,(t.y2-oy)*sy].map(v=>v.toFixed(2)).join(',')}"`
+            },
+            custom: {
+                type: 'polygon',
+                contours: [], // normalized contours [[{x,y}, ...], ...]
+                wF: n => n, hF: m => m, snapW: 1, snapH: 1,
+                // For custom, we need n*m*contours.length elements
+                getTileCount: function(n, m) { return n * m * Math.max(1, this.contours.length); },
+                getGeometry: (n, m, w, h) => ({ cellW: w / n, cellH: h / m }),
+                getTile: function(col, row, g, ox, oy, contourIdx) {
+                    // contourIdx tells us which contour within this cell
+                    const x = ox + col * g.cellW, y = oy + row * g.cellH;
+                    const contour = this.contours[contourIdx] || this.contours[0] || [];
+                    const pts = contour.map(p => [x + p.x * g.cellW, y + p.y * g.cellH]);
+                    // Calculate centroid for sampling
+                    let cx = 0, cy = 0;
+                    for (const [px, py] of pts) { cx += px; cy += py; }
+                    cx /= pts.length || 1;
+                    cy /= pts.length || 1;
+                    // Bounding box for this specific polygon
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                    for (const [px, py] of pts) {
+                        if (px < minX) minX = px;
+                        if (py < minY) minY = py;
+                        if (px > maxX) maxX = px;
+                        if (py > maxY) maxY = py;
+                    }
+                    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY, cx, cy, pts,
+                        points: pts.map(p => p.join(',')).join(' ') };
+                },
+                sample: function(imgData, t, w, h) {
+                    if (sampleMode === 'center') {
+                        const idx = (Math.floor(t.cy) * w + Math.floor(t.cx)) * 4;
+                        return (idx >= 0 && idx < imgData.data.length - 3) ? [imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]] : null;
+                    }
+                    const minX = Math.max(0, Math.floor(t.x)), maxX = Math.min(w, Math.ceil(t.x + t.w));
+                    const minY = Math.max(0, Math.floor(t.y)), maxY = Math.min(h, Math.ceil(t.y + t.h));
+                    const pixels = [];
+                    for (let py = minY; py < maxY; py++) for (let px = minX; px < maxX; px++) {
+                        if (pointInPolygon(px + 0.5, py + 0.5, t.pts)) {
+                            const idx = (py * w + px) * 4;
+                            pixels.push([imgData.data[idx], imgData.data[idx + 1], imgData.data[idx + 2]]);
+                        }
+                    }
+                    return aggregatePixels(pixels);
+                },
+                setAttrs: (el, t) => el.setAttribute('points', t.points),
+                svgTag: (t, sx, sy, ox, oy) => {
+                    const pts = t.pts.map(([px, py]) => `${((px - ox) * sx).toFixed(2)},${((py - oy) * sy).toFixed(2)}`).join(' ');
+                    return `<polygon points="${pts}"`;
+                }
             }
         };
+
+        // Point-in-polygon test (ray casting algorithm)
+        function pointInPolygon(px, py, pts) {
+            let inside = false;
+            for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+                const xi = pts[i][0], yi = pts[i][1];
+                const xj = pts[j][0], yj = pts[j][1];
+                if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        // Parse SVG transform attribute into a 2D matrix [a,b,c,d,e,f]
+        function parseTransform(transformStr) {
+            if (!transformStr) return [1, 0, 0, 1, 0, 0]; // identity
+            let m = [1, 0, 0, 1, 0, 0];
+            const ops = transformStr.match(/\w+\([^)]+\)/g) || [];
+            for (const op of ops) {
+                const match = op.match(/(\w+)\(([^)]+)\)/);
+                if (!match) continue;
+                const [, fn, args] = match;
+                const nums = args.split(/[\s,]+/).map(Number);
+                let t;
+                switch (fn) {
+                    case 'matrix': t = nums; break;
+                    case 'translate': t = [1, 0, 0, 1, nums[0] || 0, nums[1] || 0]; break;
+                    case 'scale':
+                        const sx = nums[0] || 1, sy = nums[1] !== undefined ? nums[1] : sx;
+                        t = [sx, 0, 0, sy, 0, 0]; break;
+                    case 'rotate':
+                        const a = nums[0] * Math.PI / 180, cos = Math.cos(a), sin = Math.sin(a);
+                        const cx = nums[1] || 0, cy = nums[2] || 0;
+                        if (cx || cy) {
+                            // rotate around point: translate, rotate, translate back
+                            t = [cos, sin, -sin, cos, cx - cos*cx + sin*cy, cy - sin*cx - cos*cy];
+                        } else {
+                            t = [cos, sin, -sin, cos, 0, 0];
+                        }
+                        break;
+                    case 'skewX':
+                        t = [1, 0, Math.tan(nums[0] * Math.PI / 180), 1, 0, 0]; break;
+                    case 'skewY':
+                        t = [1, Math.tan(nums[0] * Math.PI / 180), 0, 1, 0, 0]; break;
+                    default: continue;
+                }
+                // Multiply: m = m * t
+                m = [
+                    m[0]*t[0] + m[2]*t[1], m[1]*t[0] + m[3]*t[1],
+                    m[0]*t[2] + m[2]*t[3], m[1]*t[2] + m[3]*t[3],
+                    m[0]*t[4] + m[2]*t[5] + m[4], m[1]*t[4] + m[3]*t[5] + m[5]
+                ];
+            }
+            return m;
+        }
+
+        // Apply transform matrix to a point
+        function applyTransform(m, x, y) {
+            return { x: m[0]*x + m[2]*y + m[4], y: m[1]*x + m[3]*y + m[5] };
+        }
+
+        // Multiply two matrices
+        function multiplyMatrix(a, b) {
+            return [
+                a[0]*b[0] + a[2]*b[1], a[1]*b[0] + a[3]*b[1],
+                a[0]*b[2] + a[2]*b[3], a[1]*b[2] + a[3]*b[3],
+                a[0]*b[4] + a[2]*b[5] + a[4], a[1]*b[4] + a[3]*b[5] + a[5]
+            ];
+        }
+
+        // Get cumulative transform from element up to root
+        function getCumulativeTransform(el, stopAt) {
+            let m = [1, 0, 0, 1, 0, 0];
+            const stack = [];
+            while (el && el !== stopAt && el.nodeType === 1) {
+                const t = el.getAttribute('transform');
+                if (t) stack.push(parseTransform(t));
+                el = el.parentNode;
+            }
+            // Apply transforms from root down (reverse order)
+            for (let i = stack.length - 1; i >= 0; i--) {
+                m = multiplyMatrix(m, stack[i]);
+            }
+            return m;
+        }
+
+        // Extract points from a shape element
+        function extractShapePoints(shape) {
+            const tagName = shape.tagName.toLowerCase();
+            let points = [];
+
+            if (tagName === 'polygon' || tagName === 'polyline') {
+                const ptsAttr = shape.getAttribute('points');
+                if (ptsAttr) {
+                    const coords = ptsAttr.trim().split(/[\s,]+/).map(Number);
+                    for (let i = 0; i < coords.length - 1; i += 2) {
+                        points.push({ x: coords[i], y: coords[i + 1] });
+                    }
+                }
+            } else if (tagName === 'rect') {
+                const rx = parseFloat(shape.getAttribute('x')) || 0;
+                const ry = parseFloat(shape.getAttribute('y')) || 0;
+                const rw = parseFloat(shape.getAttribute('width')) || 0;
+                const rh = parseFloat(shape.getAttribute('height')) || 0;
+                points = [{ x: rx, y: ry }, { x: rx + rw, y: ry }, { x: rx + rw, y: ry + rh }, { x: rx, y: ry + rh }];
+            } else if (tagName === 'circle') {
+                const ccx = parseFloat(shape.getAttribute('cx')) || 0;
+                const ccy = parseFloat(shape.getAttribute('cy')) || 0;
+                const r = parseFloat(shape.getAttribute('r')) || 0;
+                for (let i = 0; i < 32; i++) {
+                    const angle = (i / 32) * Math.PI * 2;
+                    points.push({ x: ccx + r * Math.cos(angle), y: ccy + r * Math.sin(angle) });
+                }
+            } else if (tagName === 'ellipse') {
+                const ecx = parseFloat(shape.getAttribute('cx')) || 0;
+                const ecy = parseFloat(shape.getAttribute('cy')) || 0;
+                const erx = parseFloat(shape.getAttribute('rx')) || 0;
+                const ery = parseFloat(shape.getAttribute('ry')) || 0;
+                for (let i = 0; i < 32; i++) {
+                    const angle = (i / 32) * Math.PI * 2;
+                    points.push({ x: ecx + erx * Math.cos(angle), y: ecy + ery * Math.sin(angle) });
+                }
+            } else if (tagName === 'path') {
+                const d = shape.getAttribute('d');
+                if (d) points = linearizePath(d);
+            }
+            return points;
+        }
+
+        // Check if element has a fill (not none/transparent)
+        function hasFill(el) {
+            // Check style attribute first
+            const style = el.getAttribute('style') || '';
+            const styleMatch = style.match(/fill\s*:\s*([^;]+)/);
+            if (styleMatch) {
+                const val = styleMatch[1].trim();
+                if (val === 'none' || val === 'transparent') return false;
+                if (val) return true;
+            }
+            const fill = el.getAttribute('fill');
+            if (fill === 'none' || fill === 'transparent') return false;
+            // Default fill is black if not specified
+            return true;
+        }
+
+        // Parse SVG file and extract filled polygon contours
+        function parseSvgForContours(svgText) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(svgText, 'image/svg+xml');
+            const errorNode = doc.querySelector('parsererror');
+            if (errorNode) throw new Error('Invalid SVG: ' + errorNode.textContent);
+
+            const svg = doc.querySelector('svg');
+            if (!svg) throw new Error('No SVG element found');
+
+            // Get viewBox or width/height for normalization
+            let vbX = 0, vbY = 0, vbW, vbH;
+            const viewBox = svg.getAttribute('viewBox');
+            if (viewBox) {
+                const parts = viewBox.split(/[\s,]+/).map(Number);
+                [vbX, vbY, vbW, vbH] = parts;
+            } else {
+                vbW = parseFloat(svg.getAttribute('width')) || 100;
+                vbH = parseFloat(svg.getAttribute('height')) || 100;
+            }
+            if (!vbW || !vbH) throw new Error('Cannot determine SVG dimensions');
+
+            const contours = [];
+
+            // Helper to process a shape and add to contours
+            // extraTransform: transform to apply AFTER the shape's own transform (for <use> context)
+            // stopAtForShape: where to stop collecting shape's transforms (null = go to svg, or stop at referenced element's parent)
+            function processShape(shape, extraTransform, localTransformOnly) {
+                if (!hasFill(shape)) return;
+                let points = extractShapePoints(shape);
+                if (points.length < 3) return;
+
+                // Get shape's own transform (just its own attribute, not parent chain)
+                // When used via <use>, we only want the shape's local transform
+                const shapeTransform = localTransformOnly
+                    ? parseTransform(shape.getAttribute('transform'))
+                    : getCumulativeTransform(shape, svg);
+
+                // Combine: extraTransform is the context (use's chain), shape's transform is local
+                // Order: first apply shape's local transform, then the context transform
+                const finalTransform = extraTransform
+                    ? multiplyMatrix(extraTransform, shapeTransform)
+                    : shapeTransform;
+
+                // Apply transform to all points
+                points = points.map(p => applyTransform(finalTransform, p.x, p.y));
+
+                // Normalize to 0-1 range
+                const normalized = points.map(p => ({
+                    x: (p.x - vbX) / vbW,
+                    y: (p.y - vbY) / vbH
+                }));
+                contours.push(normalized);
+            }
+
+            // Process direct shapes (polygon, path, rect, circle, ellipse, polyline)
+            const shapes = svg.querySelectorAll('polygon, path, rect, circle, ellipse, polyline');
+            for (const shape of shapes) {
+                // Skip shapes inside defs (they're templates, not rendered directly)
+                if (shape.closest('defs')) continue;
+                processShape(shape, null, false);
+            }
+
+            // Process <use> elements - these reference other shapes
+            const uses = svg.querySelectorAll('use');
+            for (const use of uses) {
+                const href = use.getAttribute('href') || use.getAttribute('xlink:href');
+                if (!href || !href.startsWith('#')) continue;
+
+                const refId = href.slice(1);
+                const referenced = doc.getElementById(refId);
+                if (!referenced) continue;
+
+                // Get transform from <use> element up to svg (this is the "context" transform)
+                const useTransform = getCumulativeTransform(use, svg);
+
+                // Add x/y offset from <use> as additional translation
+                const ux = parseFloat(use.getAttribute('x')) || 0;
+                const uy = parseFloat(use.getAttribute('y')) || 0;
+                const offsetTransform = [1, 0, 0, 1, ux, uy];
+                const combinedUseTransform = multiplyMatrix(useTransform, offsetTransform);
+
+                // Referenced element might be a shape or a group
+                const tagName = referenced.tagName.toLowerCase();
+                if (['polygon', 'path', 'rect', 'circle', 'ellipse', 'polyline'].includes(tagName)) {
+                    // Use localTransformOnly=true since the context already includes parent transforms
+                    processShape(referenced, combinedUseTransform, true);
+                } else if (tagName === 'g') {
+                    // For a group, we need to apply the group's own transform too
+                    const groupTransform = parseTransform(referenced.getAttribute('transform'));
+                    const fullContextTransform = multiplyMatrix(combinedUseTransform, groupTransform);
+                    // Process all shapes in the group with their local transforms only
+                    const groupShapes = referenced.querySelectorAll('polygon, path, rect, circle, ellipse, polyline');
+                    for (const gs of groupShapes) {
+                        processShape(gs, fullContextTransform, true);
+                    }
+                }
+            }
+
+            if (contours.length === 0) throw new Error('No filled shapes found in SVG');
+            return contours;
+        }
+
+        // Linearize SVG path - extract points, treating curves as straight lines
+        function linearizePath(d) {
+            const points = [];
+            let cx = 0, cy = 0; // current position
+            let sx = 0, sy = 0; // start of subpath
+
+            // Tokenize: split into commands and numbers
+            const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) || [];
+            let i = 0;
+
+            function num() { return parseFloat(tokens[i++]) || 0; }
+
+            while (i < tokens.length) {
+                const cmd = tokens[i++];
+                switch (cmd) {
+                    case 'M': cx = num(); cy = num(); sx = cx; sy = cy; points.push({ x: cx, y: cy }); break;
+                    case 'm': cx += num(); cy += num(); sx = cx; sy = cy; points.push({ x: cx, y: cy }); break;
+                    case 'L': cx = num(); cy = num(); points.push({ x: cx, y: cy }); break;
+                    case 'l': cx += num(); cy += num(); points.push({ x: cx, y: cy }); break;
+                    case 'H': cx = num(); points.push({ x: cx, y: cy }); break;
+                    case 'h': cx += num(); points.push({ x: cx, y: cy }); break;
+                    case 'V': cy = num(); points.push({ x: cx, y: cy }); break;
+                    case 'v': cy += num(); points.push({ x: cx, y: cy }); break;
+                    case 'C': num(); num(); num(); num(); cx = num(); cy = num(); points.push({ x: cx, y: cy }); break;
+                    case 'c': num(); num(); num(); num(); cx += num(); cy += num(); points.push({ x: cx, y: cy }); break;
+                    case 'S': num(); num(); cx = num(); cy = num(); points.push({ x: cx, y: cy }); break;
+                    case 's': num(); num(); cx += num(); cy += num(); points.push({ x: cx, y: cy }); break;
+                    case 'Q': num(); num(); cx = num(); cy = num(); points.push({ x: cx, y: cy }); break;
+                    case 'q': num(); num(); cx += num(); cy += num(); points.push({ x: cx, y: cy }); break;
+                    case 'T': cx = num(); cy = num(); points.push({ x: cx, y: cy }); break;
+                    case 't': cx += num(); cy += num(); points.push({ x: cx, y: cy }); break;
+                    case 'A': num(); num(); num(); num(); num(); cx = num(); cy = num(); points.push({ x: cx, y: cy }); break;
+                    case 'a': num(); num(); num(); num(); num(); cx += num(); cy += num(); points.push({ x: cx, y: cy }); break;
+                    case 'Z': case 'z': cx = sx; cy = sy; break;
+                }
+            }
+            return points;
+        }
 
         // Lock icon SVG paths (moved up for setLockState)
         const LOCK_CLOSED = '<path d="M4 8h2V6a2 2 0 114 0v2h2V6a4 4 0 10-8 0v2z"/><rect x="2" y="8" width="12" height="10" rx="2"/>';
@@ -945,7 +1286,43 @@
         setupToggle('resolutionLock', () => resolutionLocked, v => { pushUndo(); resolutionLocked = v; }, true);
         setupToggle('expandMode', () => expandModeOn, v => { pushUndo(); expandModeOn = v; }, false, true);
 
-        setupBtnGroup('tileBtns', val => { pushUndo(); tileMode = val; update(); });
+        setupBtnGroup('tileBtns', val => {
+            // Special handling for custom - trigger file picker if no custom shape loaded
+            if (val === 'custom' && SHAPES.custom.contours.length === 0) {
+                $('customSvgInput').click();
+                return;
+            }
+            pushUndo();
+            tileMode = val;
+            update();
+        });
+
+        // Custom SVG file input handler
+        $('customSvgInput').addEventListener('change', e => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                try {
+                    const contours = parseSvgForContours(ev.target.result);
+                    SHAPES.custom.contours = contours;
+                    pushUndo();
+                    tileMode = 'custom';
+                    setBtnGroupValue('tileBtns', 'custom');
+                    update();
+                } catch (err) {
+                    alert('SVG parsing failed: ' + err.message);
+                }
+            };
+            reader.onerror = () => alert('Failed to read SVG file');
+            reader.readAsText(file);
+            e.target.value = ''; // reset so same file can be reloaded
+        });
+
+        // Allow clicking custom button to load new SVG even if one is already loaded
+        $('customSvgBtn').addEventListener('dblclick', () => {
+            $('customSvgInput').click();
+        });
 
         // Color conversion helpers
         function hexToRgb(hex) {
@@ -1222,6 +1599,28 @@
             link.click();
         });
 
+        // Copy PNG to clipboard (G key) - no prompt
+        function copyPngToClipboard() {
+            if (!image) return;
+            const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
+            const outCanvas = document.createElement('canvas');
+            outCanvas.width = n; outCanvas.height = m;
+            const outCtx = outCanvas.getContext('2d');
+            const imgData = getImageData();
+            const cellW = rect.width / n, cellH = rect.height / m;
+            for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
+                const color = sampleCell(imgData, rect.x + col * cellW, rect.y + row * cellH, rect.x + (col + 1) * cellW, rect.y + (row + 1) * cellH, image.width);
+                if (color) {
+                    const alpha = chromaEnabled && colorDistance(color[0], color[1], color[2], chromaColor[0], chromaColor[1], chromaColor[2]) <= chromaTolerance ? 0 : 1;
+                    outCtx.fillStyle = `rgba(${color.map(Math.round).join(',')},${alpha})`;
+                    outCtx.fillRect(col, row, 1, 1);
+                }
+            }
+            outCanvas.toBlob(blob => {
+                navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+            }, 'image/png');
+        }
+
         // Save SVG - preserves exact tile geometry (uses generic SHAPES)
         $('saveSvgBtn').addEventListener('click', () => {
             if (!image) return;
@@ -1233,14 +1632,17 @@
             const shape = SHAPES[tileMode];
             const geom = shape.getGeometry(n, m, rect.width, rect.height);
             let paths = '';
+            const numContours = tileMode === 'custom' ? Math.max(1, SHAPES.custom.contours.length) : 1;
 
             for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                // Get tile at origin (0,0) for SVG output coords
-                const tileLocal = shape.getTile(col, row, geom, 0, 0);
-                // Get tile at actual rect position for sampling
-                const tileSample = shape.getTile(col, row, geom, rect.x, rect.y);
-                const fill = colorToFill(shape.sample(imgData, tileSample, image.width, image.height));
-                if (fill) paths += shape.svgTag(tileLocal, scaleX, scaleY, 0, 0) + ` fill="${fill}"/>\n`;
+                for (let ci = 0; ci < numContours; ci++) {
+                    // Get tile at origin (0,0) for SVG output coords
+                    const tileLocal = shape.getTile(col, row, geom, 0, 0, ci);
+                    // Get tile at actual rect position for sampling
+                    const tileSample = shape.getTile(col, row, geom, rect.x, rect.y, ci);
+                    const fill = colorToFill(shape.sample(imgData, tileSample, image.width, image.height));
+                    if (fill) paths += shape.svgTag(tileLocal, scaleX, scaleY, 0, 0) + ` fill="${fill}"/>\n`;
+                }
             }
 
             const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${svgW.toFixed(0)}" height="${svgH.toFixed(0)}" viewBox="0 0 ${svgW.toFixed(0)} ${svgH.toFixed(0)}">\n${paths}</svg>`;
@@ -1389,7 +1791,6 @@
 
             const imgData = getImageData();
             const n = parseInt(nSlider.value), m = parseInt(mSlider.value);
-            const fastMode = dragging !== null;
             const gridColorRgba = `rgba(${gridColor.join(',')},0.5)`;
             const gridColorRgb = `rgb(${gridColor.join(',')})`;
             const vm = VIEW_MODES[viewMode];
@@ -1406,11 +1807,14 @@
             const shape = SHAPES[tileMode];
 
             // Check if tiles need rebuild (structure changed)
-            const tileKey = `${n},${m},${tileMode}`;
+            // For custom shapes, include contour count in key
+            const customContourCount = tileMode === 'custom' ? SHAPES.custom.contours.length : 0;
+            const tileKey = `${n},${m},${tileMode},${customContourCount}`;
+            const tileCount = shape.getTileCount ? shape.getTileCount(n, m) : n * m;
             if (tileKey !== lastTileKey) {
                 const ns = 'http://www.w3.org/2000/svg';
                 svgElements.tiles.innerHTML = '';
-                for (let i = 0; i < n * m; i++) {
+                for (let i = 0; i < tileCount; i++) {
                     const el = document.createElementNS(ns, shape.type);
                     el.setAttribute('vector-effect', 'non-scaling-stroke');
                     el.setAttribute('stroke-width', '1');
@@ -1423,18 +1827,17 @@
             const tiles = svgElements.tiles.children;
             const geom = shape.getGeometry(n, m, rect.width, rect.height);
             let idx = 0;
+            const numContours = tileMode === 'custom' ? Math.max(1, SHAPES.custom.contours.length) : 1;
             for (let row = 0; row < m; row++) for (let col = 0; col < n; col++) {
-                const tile = shape.getTile(col, row, geom, rect.x, rect.y);
-                const el = tiles[idx++];
-                shape.setAttrs(el, tile);
-                const color = fastMode ?
-                    (() => { const px = Math.floor(tile.cx), py = Math.floor(tile.cy);
-                        return (px >= 0 && px < image.width && py >= 0 && py < image.height) ?
-                            [imgData.data[(py * image.width + px) * 4], imgData.data[(py * image.width + px) * 4 + 1], imgData.data[(py * image.width + px) * 4 + 2]] : null; })() :
-                    shape.sample(imgData, tile, image.width, image.height);
-                el.setAttribute('fill', colorToFill(color, 'transparent') || 'none');
-                el.setAttribute('fill-opacity', vm.fillOpacity);
-                el.setAttribute('stroke', vm.showStroke ? gridColorRgba : 'none');
+                for (let ci = 0; ci < numContours; ci++) {
+                    const tile = shape.getTile(col, row, geom, rect.x, rect.y, ci);
+                    const el = tiles[idx++];
+                    shape.setAttrs(el, tile);
+                    const color = shape.sample(imgData, tile, image.width, image.height);
+                    el.setAttribute('fill', colorToFill(color, 'transparent') || 'none');
+                    el.setAttribute('fill-opacity', vm.fillOpacity);
+                    el.setAttribute('stroke', vm.showStroke ? gridColorRgba : 'none');
+                }
             }
 
             // Update border
@@ -1736,8 +2139,8 @@
                 viewMode = modes[e.key];
                 setBtnGroupValue('opacityBtns', viewMode);
                 update();
-            } else if (e.key.toLowerCase() === 's') { e.preventDefault(); $('saveBtn').click(); }
-            else if (e.key.toLowerCase() === 'g') { e.preventDefault(); $('saveSvgBtn').click(); }
+            } else if (e.key.toLowerCase() === 's') { e.preventDefault(); $('saveSvgBtn').click(); }
+            else if (e.key.toLowerCase() === 'g') { e.preventDefault(); copyPngToClipboard(); }
             else if (e.key.toLowerCase() === 'x') { $('expandMode').click(); }
             else if (e.key.toLowerCase() === 'h') {
                 pushUndo();
