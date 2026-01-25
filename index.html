@@ -1561,25 +1561,72 @@
         $('undoBtn').addEventListener('click', undo);
         $('redoBtn').addEventListener('click', redo);
 
-        // LocalStorage
-        function autoSave() {
-            localStorage.setItem('pixelArtToolState', JSON.stringify(getState()));
+        // Storage abstraction (IndexedDB for large data)
+        const storage = (() => {
+            const DB_NAME = 'pixelArtTool';
+            const STORE_NAME = 'data';
+            let db = null;
+
+            const open = () => new Promise((resolve, reject) => {
+                if (db) return resolve(db);
+                const req = indexedDB.open(DB_NAME, 1);
+                req.onerror = () => reject(req.error);
+                req.onsuccess = () => { db = req.result; resolve(db); };
+                req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
+            });
+
+            return {
+                async save(key, value) {
+                    const d = await open();
+                    return new Promise((resolve, reject) => {
+                        const tx = d.transaction(STORE_NAME, 'readwrite');
+                        tx.objectStore(STORE_NAME).put(value, key);
+                        tx.oncomplete = resolve;
+                        tx.onerror = () => reject(tx.error);
+                    });
+                },
+                async load(key) {
+                    const d = await open();
+                    return new Promise((resolve, reject) => {
+                        const tx = d.transaction(STORE_NAME, 'readonly');
+                        const req = tx.objectStore(STORE_NAME).get(key);
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => reject(req.error);
+                    });
+                }
+            };
+        })();
+
+        // Auto-save/restore
+        async function autoSave() {
+            await storage.save('state', getState());
             if (image) {
                 const tc = document.createElement('canvas');
                 tc.width = image.width; tc.height = image.height;
                 tc.getContext('2d').drawImage(image, 0, 0);
-                localStorage.setItem('pixelArtToolImage', tc.toDataURL('image/png'));
+                await storage.save('image', tc.toDataURL('image/png'));
             }
         }
 
-        function loadFromLocalStorage() {
-            const stateJson = localStorage.getItem('pixelArtToolState');
-            const imageData = localStorage.getItem('pixelArtToolImage');
+        async function autoRestore() {
+            const [state, imageData] = await Promise.all([
+                storage.load('state'),
+                storage.load('image')
+            ]);
             if (imageData) {
                 const img = new Image();
-                img.onload = () => { image = img; imageSrc = imageData; resizeView(); dropZone.classList.remove('show-initial'); if (stateJson) applyState(JSON.parse(stateJson)); render(); };
+                img.onload = () => {
+                    image = img;
+                    imageSrc = imageData;
+                    resizeView();
+                    dropZone.classList.remove('show-initial');
+                    if (state) applyState(state);
+                    render();
+                };
                 img.src = imageData;
-            } else if (stateJson) applyState(JSON.parse(stateJson));
+            } else if (state) {
+                applyState(state);
+            }
         }
 
         // Color sampling
@@ -2192,7 +2239,7 @@
             else if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
         });
 
-        loadFromLocalStorage();
+        autoRestore();
         initBtnGroupIndicators();
 
         // Glassify elements - adds liquid glass styling
