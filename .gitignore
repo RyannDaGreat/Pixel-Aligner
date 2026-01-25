@@ -20,3 +20,5 @@
 .frenzy
 #<RP Default Gitignore End>
 
+.claude_plan.md
+.claude_todo.md
