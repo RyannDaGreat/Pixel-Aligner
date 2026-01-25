@@ -2157,11 +2157,20 @@
             const isTop = dragging === 'top' || dragging === 'tl' || dragging === 'tr';
             const isBottom = dragging === 'bottom' || dragging === 'bl' || dragging === 'br';
 
-            if (isRight) rect.width = rectStart.width + dx;
-            if (isBottom) rect.height = rectStart.height + dy;
-            if (isLeft) { rect.width = rectStart.width - dx; rect.x = rectStart.x + dx; }
-            if (isTop) { rect.height = rectStart.height - dy; rect.y = rectStart.y + dy; }
-            normalizeRect();
+            // Calculate new bounds based on which edge/corner is being dragged
+            let x0 = rectStart.x, y0 = rectStart.y;
+            let x1 = rectStart.x + rectStart.width, y1 = rectStart.y + rectStart.height;
+
+            if (isLeft) x0 = rectStart.x + dx;
+            if (isRight) x1 = rectStart.x + rectStart.width + dx;
+            if (isTop) y0 = rectStart.y + dy;
+            if (isBottom) y1 = rectStart.y + rectStart.height + dy;
+
+            // Normalize so x0 < x1 and y0 < y1
+            rect.x = Math.min(x0, x1);
+            rect.y = Math.min(y0, y1);
+            rect.width = Math.abs(x1 - x0);
+            rect.height = Math.abs(y1 - y0);
         }
 
         window.addEventListener('mouseup', () => { if (dragging) autoSave(); dragging = null; document.body.classList.remove('dragging'); });
