@@ -1341,9 +1341,9 @@
                     SHAPES.custom.contours = contours;
                     pushUndo();
                     tileMode = 'custom';
-                    // Set rows and cols to 1 for custom SVG
                     nSlider.value = nInput.value = mSlider.value = mInput.value = 1;
                     setBtnGroupValue('tileBtns', 'custom');
+                    update();
                 } catch (err) {
                     alert('SVG parsing failed: ' + err.message);
                 }
