@@ -21,6 +21,9 @@
             --shadow-deep: 0 8px 32px rgba(0, 0, 0, 0.4);
             --shadow-glow: 0 0 20px rgba(233, 69, 96, 0.2);
             --toolbar-height: 52px;
+            --ui-margin: 12px;
+            --panel-bg: rgba(11, 13, 20, 0.8);
+            --panel-radius: 8px;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body.dragging { user-select: none; -webkit-user-select: none; cursor: grabbing !important; }
@@ -35,6 +38,14 @@
             display: flex;
             flex-direction: column;
         }
+        /* Shared glass panel styling */
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border-subtle);
+            border-radius: var(--panel-radius);
+        }
         .controls {
             position: fixed;
             top: 0;
@@ -42,9 +53,6 @@
             right: 0;
             z-index: 50;
             padding: 12px 20px;
-            background: rgba(11, 13, 20, 0.8);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
             display: flex;
             gap: 24px;
             align-items: center;
@@ -314,23 +322,20 @@
         /* Minimap */
         .minimap {
             position: absolute;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid var(--glass-border);
-            border-radius: 4px;
+            bottom: var(--ui-margin);
+            right: var(--ui-margin);
             display: none;
         }
         .minimap.visible { display: block; }
         .minimap canvas {
             display: block;
-            border-radius: 3px;
+            border-radius: inherit;
         }
         .minimap-viewport {
             position: absolute;
             pointer-events: none;
             box-shadow: inset 0 0 0 1px var(--accent);
-            border-radius: 3px;
+            border-radius: inherit;
         }
         /* Palette panel */
         .palette-panel {
@@ -449,11 +454,6 @@
             font-size: 14px;
             font-weight: 500;
             color: var(--text-primary);
-            background: var(--glass-bg);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid var(--glass-border);
-            border-radius: 8px;
             cursor: pointer;
             opacity: 0;
             pointer-events: none;
@@ -471,17 +471,12 @@
         /* Context info panel - shows modifier keys during drag */
         .context-info {
             position: absolute;
-            bottom: 16px;
-            left: 16px;
+            bottom: var(--ui-margin);
+            left: var(--ui-margin);
             display: flex;
             flex-direction: column;
             gap: 6px;
             padding: 10px 14px;
-            background: var(--glass-bg);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid var(--glass-border-subtle);
-            border-radius: 8px;
             font-size: 12px;
             color: var(--text-muted);
             z-index: 10;
@@ -533,7 +528,7 @@
             <path class="chain-broken" style="display:none" d="M9 17l-4 4M15 7l4-4M8 12H4M20 12h-4M12 8V4M12 20v-4"/>
         </symbol>
     </svg>
-    <div class="controls">
+    <div class="controls glass-panel">
         <div class="control-group slider-group">
             <div class="slider-pair-with-chain">
                 <div class="control-group">
@@ -660,14 +655,14 @@
         <div class="drop-zone show-initial" id="dropZone">
             <p>Drop an image here</p>
         </div>
-        <div class="minimap" id="minimap">
+        <div class="minimap glass-panel" id="minimap">
             <canvas id="minimapCanvas"></canvas>
             <div class="minimap-viewport" id="minimapViewport"></div>
         </div>
-        <button class="reset-view-btn" id="resetViewBtn">Reset View</button>
-        <div class="context-info" id="contextInfo">
+        <button class="reset-view-btn glass-panel" id="resetViewBtn">Reset View</button>
+        <div class="context-info glass-panel" id="contextInfo">
             <div class="key-hint" id="hintShift"><span class="key">⇧</span> <span class="desc">Precise</span></div>
-            <div class="key-hint" id="hintCmd"><span class="key">⌘</span> <span class="desc">Aspect lock</span></div>
+            <div class="key-hint" id="hintCmd"><span class="key">⌘</span> <span class="desc">Constrain</span></div>
             <div class="key-hint" id="hintSnap"><span class="key">⌥</span> <span class="desc">Snap</span></div>
         </div>
     </div>
@@ -732,6 +727,7 @@
         let dragging = null;
         let dragStart = { x: 0, y: 0 };
         let rectStart = { x: 0, y: 0, width: 0, height: 0 };
+        let lastDragDelta = { x: 0, y: 0 }; // For computing axis lock
         let nStart = DEFAULT_N, mStart = DEFAULT_M;
 
         let undoStack = [], redoStack = [];
@@ -1993,6 +1989,14 @@
                 svgElements.handles.push(h);
                 mainSvg.appendChild(h);
             }
+
+            // Guide line for axis-locked operations
+            svgElements.guide = document.createElementNS(ns, 'line');
+            svgElements.guide.setAttribute('stroke-dasharray', '4,4');
+            svgElements.guide.setAttribute('stroke-width', '1');
+            svgElements.guide.setAttribute('vector-effect', 'non-scaling-stroke');
+            svgElements.guide.style.display = 'none';
+            mainSvg.appendChild(svgElements.guide);
         }
 
         let renderPending = false;
@@ -2069,8 +2073,40 @@
             svgElements.border.setAttribute('stroke', gridColorRgb);
 
             updateHandles(gridColorRgb);
+            updateGuide(gridColorRgb);
             updateView();
             updateInfoField();
+        }
+
+        function updateGuide(color) {
+            if (!svgElements.guide) return;
+            const axisLock = getAxisLock();
+            if (!axisLock) {
+                svgElements.guide.style.display = 'none';
+                return;
+            }
+            svgElements.guide.style.display = '';
+            svgElements.guide.setAttribute('stroke', color);
+            const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+            // Convert screen corners to SVG coords for visible bounds
+            const ctm = mainSvg.getScreenCTM()?.inverse();
+            if (!ctm) return;
+            const pt = mainSvg.createSVGPoint();
+            pt.x = 0; pt.y = 0;
+            const topLeft = pt.matrixTransform(ctm);
+            pt.x = window.innerWidth; pt.y = window.innerHeight;
+            const bottomRight = pt.matrixTransform(ctm);
+            if (axisLock === 'x') {
+                svgElements.guide.setAttribute('x1', topLeft.x);
+                svgElements.guide.setAttribute('y1', cy);
+                svgElements.guide.setAttribute('x2', bottomRight.x);
+                svgElements.guide.setAttribute('y2', cy);
+            } else {
+                svgElements.guide.setAttribute('x1', cx);
+                svgElements.guide.setAttribute('y1', topLeft.y);
+                svgElements.guide.setAttribute('x2', cx);
+                svgElements.guide.setAttribute('y2', bottomRight.y);
+            }
         }
 
         function updateHandles(color) {
@@ -2199,22 +2235,38 @@
             modifiers.alt = e.altKey;
         }
 
+        /** Compute axis lock from current state (single source of truth) */
+        function getAxisLock() {
+            if (!dragging) return null;
+            if (dragging === 'left' || dragging === 'right') return 'x';
+            if (dragging === 'top' || dragging === 'bottom') return 'y';
+            if (dragging === 'move' && modifiers.cmd) {
+                return Math.abs(lastDragDelta.x) > Math.abs(lastDragDelta.y) ? 'x' : 'y';
+            }
+            return null;
+        }
+
         /** Apply drag based on current state */
         function applyDrag() {
             if (!dragging || !lastDragEvent) return;
 
             const pos = getMousePos(lastDragEvent);
             let dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
+            lastDragDelta = { x: dx, y: dy };
             if (modifiers.shift) { dx /= 10; dy /= 10; }
 
             const snap = getEffectiveSnap();
+            const axisLock = getAxisLock();
 
             if (dragging === 'move') {
                 let newX = rectStart.x + dx, newY = rectStart.y + dy;
+                // Cmd locks to X or Y axis
+                if (axisLock === 'x') newY = rectStart.y;
+                else if (axisLock === 'y') newX = rectStart.x;
                 if (snap && !modifiers.shift) {
                     const snapUnits = getTileSnapUnits(nStart, mStart, rectStart.width, rectStart.height);
-                    newX = rectStart.x + Math.round(dx / snapUnits.dx) * snapUnits.dx;
-                    newY = rectStart.y + Math.round(dy / snapUnits.dy) * snapUnits.dy;
+                    newX = rectStart.x + Math.round((newX - rectStart.x) / snapUnits.dx) * snapUnits.dx;
+                    newY = rectStart.y + Math.round((newY - rectStart.y) / snapUnits.dy) * snapUnits.dy;
                 }
                 rect.x = newX; rect.y = newY;
             } else if (snap) {
@@ -2350,8 +2402,10 @@
             if (dragging) autoSave();
             dragging = null;
             lastDragEvent = null;
+            lastDragDelta = { x: 0, y: 0 };
             document.body.classList.remove('dragging');
             updateModifierUI();
+            render(); // Hide guide line
         });
         window.addEventListener('resize', () => { if (image) { resizeView(); render(); } });
 
