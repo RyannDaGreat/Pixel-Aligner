@@ -331,19 +331,15 @@
             position: absolute;
             bottom: 10px;
             right: 10px;
-            width: 150px;
-            height: 150px;
             background: rgba(0, 0, 0, 0.5);
             border: 1px solid var(--glass-border);
             border-radius: 6px;
-            overflow: hidden;
             display: none;
+            padding: 2px; /* Space for viewport border */
         }
         .minimap.visible { display: block; }
         .minimap canvas {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
+            display: block;
         }
         .minimap-viewport {
             position: absolute;
@@ -1789,10 +1785,17 @@
             if (!image) { minimap.classList.remove('visible'); return; }
             minimap.classList.add('visible');
 
-            const displayScale = getDisplayScale();
-            // Viewport bounds in image coords
-            const vbW = image.width / viewZoom;
-            const vbH = image.height / viewZoom;
+            const cr = container.getBoundingClientRect();
+            // fitScale is the base scale to fit image in container (without zoom)
+            const fitScale = Math.min((cr.width - CONTAINER_PADDING) / image.width, (cr.height - CONTAINER_PADDING) / image.height);
+            const displayScale = fitScale * viewZoom;
+
+            // Viewport size in image coords - based on actual container aspect ratio
+            const vbW = cr.width / displayScale;
+            const vbH = cr.height / displayScale;
+
+            // Viewport position in image coords
+            // viewOffset is in screen pixels, convert to image coords
             const vbX = -viewOffset.x / displayScale;
             const vbY = -viewOffset.y / displayScale;
 
@@ -1818,9 +1821,10 @@
             const imgY = (0 - minY) * mmScale;
             ctx.drawImage(image, imgX, imgY, image.width * mmScale, image.height * mmScale);
 
-            // Position viewport rectangle
-            const vpX = (vbX - minX) * mmScale;
-            const vpY = (vbY - minY) * mmScale;
+            // Position viewport rectangle (offset by padding)
+            const padding = 2;
+            const vpX = (vbX - minX) * mmScale + padding;
+            const vpY = (vbY - minY) * mmScale + padding;
             minimapViewport.style.left = vpX + 'px';
             minimapViewport.style.top = vpY + 'px';
             minimapViewport.style.width = (vbW * mmScale) + 'px';
