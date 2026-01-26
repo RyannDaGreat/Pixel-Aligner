@@ -2199,19 +2199,28 @@
             // Do free resize first
             handleFreeResize(dx, dy);
 
-            // Constrain to aspect ratio - keep the anchor corner fixed
             // After normalize, flipX/flipY tell us if we crossed over
             const anchorRight = (dragging[1] === 'l') !== rect.flipX;
             const anchorBottom = (dragging[0] === 't') !== rect.flipY;
 
-            if (Math.abs(dx) > Math.abs(dy)) {
-                const newH = rect.width / lockedAspectRatio;
-                if (anchorBottom) rect.y += rect.height - newH;
-                rect.height = newH;
+            // Two solutions: match width or match height to cursor
+            // Solution 1: keep width, derive height
+            const h1 = rect.width / lockedAspectRatio;
+            // Solution 2: keep height, derive width
+            const w2 = rect.height * lockedAspectRatio;
+
+            // Pick solution that keeps cursor on an edge
+            // If we use solution 1, cursor stays on the vertical edge (x matches)
+            // If we use solution 2, cursor stays on the horizontal edge (y matches)
+            // Choose the one where the derived dimension is >= what cursor wants
+            const useWidth = h1 >= rect.height;
+
+            if (useWidth) {
+                if (anchorBottom) rect.y += rect.height - h1;
+                rect.height = h1;
             } else {
-                const newW = rect.height * lockedAspectRatio;
-                if (anchorRight) rect.x += rect.width - newW;
-                rect.width = newW;
+                if (anchorRight) rect.x += rect.width - w2;
+                rect.width = w2;
             }
         }
 
