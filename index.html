@@ -2196,37 +2196,23 @@
         }
 
         function handleAspectResize(dx, dy) {
-            const sf = Math.max(Math.abs(dx) / rectStart.width, Math.abs(dy) / rectStart.height);
+            // Do free resize first
+            handleFreeResize(dx, dy);
 
-            if (['br', 'tl', 'tr', 'bl'].includes(dragging)) {
-                const signs = { br: dx + dy, tl: -(dx + dy), tr: dx - dy, bl: -dx + dy };
-                const sign = signs[dragging] > 0 ? 1 : -1;
-                const newW = rectStart.width * (1 + sign * sf);
-                const newH = newW / lockedAspectRatio;
-                rect.width = newW; rect.height = newH;
-                if (dragging[0] === 't') rect.y = rectStart.y + rectStart.height - newH;
-                if (dragging[1] === 'l') rect.x = rectStart.x + rectStart.width - newW;
+            // Constrain to aspect ratio - keep the anchor corner fixed
+            // After normalize, flipX/flipY tell us if we crossed over
+            const anchorRight = (dragging[1] === 'l') !== rect.flipX;
+            const anchorBottom = (dragging[0] === 't') !== rect.flipY;
+
+            if (Math.abs(dx) > Math.abs(dy)) {
+                const newH = rect.width / lockedAspectRatio;
+                if (anchorBottom) rect.y += rect.height - newH;
+                rect.height = newH;
             } else {
-                // Edge resize - scale from opposite edge center
-                const isHoriz = dragging === 'left' || dragging === 'right';
-                const delta = isHoriz ? dx : dy;
-                const fromStart = dragging === 'left' || dragging === 'top';
-
-                if (isHoriz) {
-                    const newW = rectStart.width + (fromStart ? -delta : delta);
-                    const newH = newW / lockedAspectRatio;
-                    const centerY = rectStart.y + rectStart.height / 2;
-                    rect.width = newW; rect.height = newH; rect.y = centerY - newH / 2;
-                    if (fromStart) rect.x = rectStart.x + rectStart.width - newW;
-                } else {
-                    const newH = rectStart.height + (fromStart ? -delta : delta);
-                    const newW = newH * lockedAspectRatio;
-                    const centerX = rectStart.x + rectStart.width / 2;
-                    rect.width = newW; rect.height = newH; rect.x = centerX - newW / 2;
-                    if (fromStart) rect.y = rectStart.y + rectStart.height - newH;
-                }
+                const newW = rect.height * lockedAspectRatio;
+                if (anchorRight) rect.x += rect.width - newW;
+                rect.width = newW;
             }
-            normalizeRect();
         }
 
         function handleFreeResize(dx, dy) {
