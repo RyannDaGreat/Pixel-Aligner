@@ -263,21 +263,6 @@
             font-weight: 500;
             text-shadow: 0 0 20px var(--accent-glow);
         }
-        .instructions {
-            position: fixed;
-            bottom: 15px;
-            left: 15px;
-            background: var(--glass-bg);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            padding: 12px 16px;
-            border-radius: 10px;
-            border: 1px solid var(--glass-border);
-            font-size: 11px;
-            color: var(--text-muted);
-            max-width: 300px;
-            box-shadow: var(--shadow-deep);
-        }
         #infoField {
             color: var(--accent);
             padding: 6px 10px;
@@ -343,7 +328,7 @@
         .minimap-viewport {
             position: absolute;
             pointer-events: none;
-            box-shadow: inset 0 0 0 2px var(--accent);
+            box-shadow: inset 0 0 0 1px var(--accent);
             border-radius: 4px;
         }
         /* Palette panel */
@@ -453,6 +438,35 @@
         /* Utility classes */
         .label-fixed { width: 40px; }
         .tolerance-val { min-width: 25px; font-size: 12px; color: var(--accent); }
+        /* Reset view button */
+        .reset-view-btn {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 12px 24px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            cursor: pointer;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            z-index: 10;
+        }
+        .reset-view-btn.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .reset-view-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: var(--accent);
+        }
     </style>
 </head>
 <body>
@@ -601,11 +615,9 @@
             <canvas id="minimapCanvas"></canvas>
             <div class="minimap-viewport" id="minimapViewport"></div>
         </div>
+        <button class="reset-view-btn" id="resetViewBtn">Reset View</button>
     </div>
 
-    <div class="instructions">
-        Drag corners to resize the pixel grid. Drag inside to move it. Use sliders to change grid dimensions.
-    </div>
 
     <!-- Palette Panel -->
     <div class="palette-panel" id="palettePanel">
@@ -1779,6 +1791,7 @@
         const minimap = $('minimap');
         const minimapCanvas = $('minimapCanvas');
         const minimapViewport = $('minimapViewport');
+        const resetViewBtn = $('resetViewBtn');
 
         function updateMinimapViewport() {
             if (!image) { minimap.classList.remove('visible'); return; }
@@ -1798,11 +1811,16 @@
             const vbX = -viewOffset.x / displayScale;
             const vbY = -viewOffset.y / displayScale;
 
-            // Find bounding box that contains both image (0,0,w,h) and viewport
-            const minX = Math.min(0, vbX);
-            const minY = Math.min(0, vbY);
-            const maxX = Math.max(image.width, vbX + vbW);
-            const maxY = Math.max(image.height, vbY + vbH);
+            // Check if image is out of viewport (no overlap)
+            const imageOutOfView = vbX > image.width || vbY > image.height ||
+                                   vbX + vbW < 0 || vbY + vbH < 0;
+            resetViewBtn.classList.toggle('visible', imageOutOfView);
+
+            // Find bounding box that contains image, viewport, and shape bounds
+            const minX = Math.min(0, vbX, rect.x);
+            const minY = Math.min(0, vbY, rect.y);
+            const maxX = Math.max(image.width, vbX + vbW, rect.x + rect.width);
+            const maxY = Math.max(image.height, vbY + vbH, rect.y + rect.height);
             const totalW = maxX - minX;
             const totalH = maxY - minY;
 
@@ -1820,6 +1838,15 @@
             const imgY = (0 - minY) * mmScale;
             ctx.drawImage(image, imgX, imgY, image.width * mmScale, image.height * mmScale);
 
+            // Draw shape bounds rectangle
+            const rectX = (rect.x - minX) * mmScale;
+            const rectY = (rect.y - minY) * mmScale;
+            const rectW = rect.width * mmScale;
+            const rectH = rect.height * mmScale;
+            ctx.strokeStyle = `rgb(${gridColor.join(',')})`;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(rectX, rectY, rectW, rectH);
+
             // Position viewport rectangle
             const vpX = (vbX - minX) * mmScale;
             const vpY = (vbY - minY) * mmScale;
@@ -1828,6 +1855,14 @@
             minimapViewport.style.width = (vbW * mmScale) + 'px';
             minimapViewport.style.height = (vbH * mmScale) + 'px';
         }
+
+        // Reset view button click handler
+        resetViewBtn.addEventListener('click', () => {
+            viewZoom = 1;
+            viewOffset = { x: 0, y: 0 };
+            updateView();
+            updateMinimap();
+        });
 
         function updateMinimap() { updateMinimapViewport(); }
 
