@@ -468,6 +468,60 @@
             background: rgba(255, 255, 255, 0.15);
             border-color: var(--accent);
         }
+        /* Context info panel - shows modifier keys during drag */
+        .context-info {
+            position: absolute;
+            bottom: 16px;
+            left: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 10px 14px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border-subtle);
+            border-radius: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+            z-index: 10;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+        .context-info.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .context-info .key-hint {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.5;
+            transition: opacity 0.1s ease;
+        }
+        .context-info .key-hint.active {
+            opacity: 1;
+            color: var(--text-primary);
+        }
+        .context-info .key-hint .key {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 24px;
+            height: 22px;
+            padding: 0 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--glass-border-subtle);
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .context-info .key-hint.active .key {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -611,6 +665,11 @@
             <div class="minimap-viewport" id="minimapViewport"></div>
         </div>
         <button class="reset-view-btn" id="resetViewBtn">Reset View</button>
+        <div class="context-info" id="contextInfo">
+            <div class="key-hint" id="hintShift"><span class="key">⇧</span> <span class="desc">Precise</span></div>
+            <div class="key-hint" id="hintCmd"><span class="key">⌘</span> <span class="desc">Aspect lock</span></div>
+            <div class="key-hint" id="hintSnap"><span class="key">⌥</span> <span class="desc">Snap</span></div>
+        </div>
     </div>
 
 
@@ -2111,37 +2170,94 @@
             mainSvg.style.cursor = (eyedropperMode || paletteEyedropperMode) ? 'crosshair' : (CURSORS[getHitZone(pos)] || 'default');
         });
 
-        window.addEventListener('mousemove', e => {
-            if (!dragging) return;
+        const contextInfo = $('contextInfo');
+        const hintShift = $('hintShift'), hintCmd = $('hintCmd'), hintSnap = $('hintSnap');
+        const snapModeBtn = $('snapMode');
 
-            const pos = getMousePos(e);
+        // Current modifier state (updated on key events)
+        const modifiers = { shift: false, cmd: false, alt: false };
+
+        /** Get effective snap state (base XOR alt modifier) */
+        function getEffectiveSnap() { return snapModeOn !== modifiers.alt; }
+
+        /** Update all UI to reflect effective state with current modifiers */
+        function updateModifierUI() {
+            const anyModifier = modifiers.shift || modifiers.cmd || modifiers.alt;
+            // Show context info if dragging OR any modifier is held
+            contextInfo.classList.toggle('visible', dragging || anyModifier);
+            hintShift.classList.toggle('active', modifiers.shift);
+            hintCmd.classList.toggle('active', modifiers.cmd);
+            hintSnap.classList.toggle('active', getEffectiveSnap());
+            // Snap button always reflects effective state
+            snapModeBtn.classList.toggle('active', getEffectiveSnap());
+        }
+
+        /** Update modifier state from event */
+        function updateModifiers(e) {
+            modifiers.shift = e.shiftKey;
+            modifiers.cmd = e.ctrlKey || e.metaKey;
+            modifiers.alt = e.altKey;
+        }
+
+        /** Apply drag based on current state */
+        function applyDrag() {
+            if (!dragging || !lastDragEvent) return;
+
+            const pos = getMousePos(lastDragEvent);
             let dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
-            if (e.shiftKey) { dx /= 10; dy /= 10; }
+            if (modifiers.shift) { dx /= 10; dy /= 10; }
+
+            const snap = getEffectiveSnap();
 
             if (dragging === 'move') {
                 let newX = rectStart.x + dx, newY = rectStart.y + dy;
-                if (snapModeOn && !e.shiftKey) {
-                    // Snap relative to original position based on tile geometry
-                    const snap = getTileSnapUnits(nStart, mStart, rectStart.width, rectStart.height);
-                    const snappedDx = Math.round(dx / snap.dx) * snap.dx;
-                    const snappedDy = Math.round(dy / snap.dy) * snap.dy;
-                    newX = rectStart.x + snappedDx;
-                    newY = rectStart.y + snappedDy;
+                if (snap && !modifiers.shift) {
+                    const snapUnits = getTileSnapUnits(nStart, mStart, rectStart.width, rectStart.height);
+                    newX = rectStart.x + Math.round(dx / snapUnits.dx) * snapUnits.dx;
+                    newY = rectStart.y + Math.round(dy / snapUnits.dy) * snapUnits.dy;
                 }
                 rect.x = newX; rect.y = newY;
-            } else if (snapModeOn) {
+            } else if (snap) {
                 handleSnapResize(dx, dy);
             } else {
-                // Ctrl: aspect-locked resize, otherwise free resize
-                // Edges always use free resize (axis-locked)
                 const isEdge = ['left', 'right', 'top', 'bottom'].includes(dragging);
-                if ((e.ctrlKey || e.metaKey) && !isEdge) {
-                    handleAspectResize(dx, dy);
+                if (modifiers.cmd && !isEdge) {
+                    const newRect = resizeAspect(rectStart, dragging, dx, dy, lockedAspectRatio);
+                    rect.x = newRect.x; rect.y = newRect.y;
+                    rect.width = newRect.width; rect.height = newRect.height;
                 } else {
-                    handleFreeResize(dx, dy);
+                    const newRect = resizeFree(rectStart, dragging, dx, dy);
+                    rect.x = newRect.x; rect.y = newRect.y;
+                    rect.width = newRect.width; rect.height = newRect.height;
                 }
             }
             render();
+        }
+
+        // Track last mouse event for key-triggered updates
+        let lastDragEvent = null;
+
+        window.addEventListener('mousemove', e => {
+            lastDragEvent = e;
+            updateModifiers(e);
+            updateModifierUI();
+            applyDrag();
+        });
+
+        // Update on modifier key changes
+        window.addEventListener('keydown', e => {
+            if (['Shift', 'Control', 'Meta', 'Alt'].includes(e.key)) {
+                updateModifiers(e);
+                updateModifierUI();
+                if (dragging) applyDrag();
+            }
+        });
+        window.addEventListener('keyup', e => {
+            if (['Shift', 'Control', 'Meta', 'Alt'].includes(e.key)) {
+                updateModifiers(e);
+                updateModifierUI();
+                if (dragging) applyDrag();
+            }
         });
 
         // Get snap units for each tile mode - how much to move per tile add/remove
@@ -2187,57 +2303,56 @@
             if (dys) { rect.height = newRect.height; rect.y = newRect.y; mSlider.value = mInput.value = newM; }
         }
 
-        // Normalize rect so width/height are always positive, track flip state
-        function normalizeRect() {
-            rect.flipX = rect.width < 0;
-            rect.flipY = rect.height < 0;
-            if (rect.flipX) { rect.x += rect.width; rect.width = -rect.width; }
-            if (rect.flipY) { rect.y += rect.height; rect.height = -rect.height; }
+        /** Normalize rect so width/height are positive, return with flip state */
+        function normalizeRect(r) {
+            const flipX = r.width < 0, flipY = r.height < 0;
+            return {
+                x: flipX ? r.x + r.width : r.x,
+                y: flipY ? r.y + r.height : r.y,
+                width: Math.abs(r.width),
+                height: Math.abs(r.height),
+                flipX, flipY
+            };
         }
 
-        function handleAspectResize(dx, dy) {
-            // Do free resize first
-            handleFreeResize(dx, dy);
+        /** Free resize - returns new rect */
+        function resizeFree(rectStart, handle, dx, dy) {
+            const isLeft = handle === 'left' || handle[1] === 'l';
+            const isRight = handle === 'right' || handle[1] === 'r';
+            const isTop = handle === 'top' || handle[0] === 't';
+            const isBottom = handle === 'bottom' || handle[0] === 'b';
 
-            // After normalize, flipX/flipY tell us if we crossed over
-            const anchorRight = (dragging[1] === 'l') !== rect.flipX;
-            const anchorBottom = (dragging[0] === 't') !== rect.flipY;
+            return normalizeRect({
+                x: rectStart.x + (isLeft ? dx : 0),
+                y: rectStart.y + (isTop ? dy : 0),
+                width: rectStart.width + (isRight ? dx : 0) - (isLeft ? dx : 0),
+                height: rectStart.height + (isBottom ? dy : 0) - (isTop ? dy : 0)
+            });
+        }
 
-            // Two solutions: match width or match height to cursor
-            // Solution 1: keep width, derive height
-            const h1 = rect.width / lockedAspectRatio;
-            // Solution 2: keep height, derive width
-            const w2 = rect.height * lockedAspectRatio;
+        /** Aspect-locked resize - returns new rect */
+        function resizeAspect(rectStart, handle, dx, dy, aspectRatio) {
+            const r = resizeFree(rectStart, handle, dx, dy);
+            const anchorRight = (handle[1] === 'l') !== r.flipX;
+            const anchorBottom = (handle[0] === 't') !== r.flipY;
 
-            // Pick solution that keeps cursor on an edge
-            // If we use solution 1, cursor stays on the vertical edge (x matches)
-            // If we use solution 2, cursor stays on the horizontal edge (y matches)
-            // Choose the one where the derived dimension is >= what cursor wants
-            const useWidth = h1 >= rect.height;
+            const h1 = r.width / aspectRatio;
+            const w2 = r.height * aspectRatio;
 
-            if (useWidth) {
-                if (anchorBottom) rect.y += rect.height - h1;
-                rect.height = h1;
+            if (h1 >= r.height) {
+                return { ...r, y: anchorBottom ? r.y + r.height - h1 : r.y, height: h1 };
             } else {
-                if (anchorRight) rect.x += rect.width - w2;
-                rect.width = w2;
+                return { ...r, x: anchorRight ? r.x + r.width - w2 : r.x, width: w2 };
             }
         }
 
-        function handleFreeResize(dx, dy) {
-            const isLeft = dragging === 'left' || dragging[1] === 'l';
-            const isRight = dragging === 'right' || dragging[1] === 'r';
-            const isTop = dragging === 'top' || dragging[0] === 't';
-            const isBottom = dragging === 'bottom' || dragging[0] === 'b';
-
-            rect.x = rectStart.x + (isLeft ? dx : 0);
-            rect.y = rectStart.y + (isTop ? dy : 0);
-            rect.width = rectStart.width + (isRight ? dx : 0) - (isLeft ? dx : 0);
-            rect.height = rectStart.height + (isBottom ? dy : 0) - (isTop ? dy : 0);
-            normalizeRect();
-        }
-
-        window.addEventListener('mouseup', () => { if (dragging) autoSave(); dragging = null; document.body.classList.remove('dragging'); });
+        window.addEventListener('mouseup', () => {
+            if (dragging) autoSave();
+            dragging = null;
+            lastDragEvent = null;
+            document.body.classList.remove('dragging');
+            updateModifierUI();
+        });
         window.addEventListener('resize', () => { if (image) { resizeView(); render(); } });
 
         // Trackpad pan/zoom: two-finger scroll = pan, pinch = zoom
