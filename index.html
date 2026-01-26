@@ -326,6 +326,31 @@
         .chroma-slider {
             width: 70px;
         }
+        /* Minimap */
+        .minimap {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 150px;
+            height: 150px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            overflow: hidden;
+            display: none;
+        }
+        .minimap.visible { display: block; }
+        .minimap canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .minimap-viewport {
+            position: absolute;
+            border: 2px solid var(--accent);
+            pointer-events: none;
+            box-sizing: border-box;
+        }
         /* Palette panel */
         .palette-panel {
             position: fixed;
@@ -573,6 +598,10 @@
         </div>
         <div class="drop-zone show-initial" id="dropZone">
             <p>Drop an image here</p>
+        </div>
+        <div class="minimap" id="minimap">
+            <canvas id="minimapCanvas"></canvas>
+            <div class="minimap-viewport" id="minimapViewport"></div>
         </div>
     </div>
 
@@ -1775,29 +1804,87 @@
             reader.readAsDataURL(file);
         }
 
-        let canvasScale = 1; // scale from image coords to display coords
+        // Single source of truth for display scaling
+        // Returns ratio of screen pixels to image pixels (accounting for zoom)
+        function getDisplayScale() {
+            if (!image) return 1;
+            const cr = container.getBoundingClientRect();
+            const fitScale = Math.min((cr.width - 40) / image.width, (cr.height - 40) / image.height);
+            return fitScale * viewZoom;
+        }
 
         function resizeView() {
             if (!image) return;
-            const cr = container.getBoundingClientRect();
-            canvasScale = Math.min((cr.width - 40) / image.width, (cr.height - 40) / image.height, 1);
             updateView();
+            updateMinimap();
         }
 
         function updateView() {
             if (!image) return;
             const cr = container.getBoundingClientRect();
+            const displayScale = getDisplayScale();
             // Calculate viewBox for pan/zoom (SVG re-renders at full res)
             const vbW = image.width / viewZoom;
             const vbH = image.height / viewZoom;
-            const vbX = -viewOffset.x / (canvasScale * viewZoom);
-            const vbY = -viewOffset.y / (canvasScale * viewZoom);
+            const vbX = -viewOffset.x / displayScale;
+            const vbY = -viewOffset.y / displayScale;
             mainSvg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
             // Size SVG to fill container
             mainSvg.style.width = cr.width + 'px';
             mainSvg.style.height = cr.height + 'px';
             wrapper.style.transform = '';
+            updateMinimapViewport();
         }
+
+        // Minimap
+        const minimap = $('minimap');
+        const minimapCanvas = $('minimapCanvas');
+        const minimapViewport = $('minimapViewport');
+        const MINIMAP_SIZE = 150;
+
+        function updateMinimapViewport() {
+            if (!image) { minimap.classList.remove('visible'); return; }
+            minimap.classList.add('visible');
+
+            const displayScale = getDisplayScale();
+            // Viewport bounds in image coords
+            const vbW = image.width / viewZoom;
+            const vbH = image.height / viewZoom;
+            const vbX = -viewOffset.x / displayScale;
+            const vbY = -viewOffset.y / displayScale;
+
+            // Find bounding box that contains both image (0,0,w,h) and viewport
+            const minX = Math.min(0, vbX);
+            const minY = Math.min(0, vbY);
+            const maxX = Math.max(image.width, vbX + vbW);
+            const maxY = Math.max(image.height, vbY + vbH);
+            const totalW = maxX - minX;
+            const totalH = maxY - minY;
+
+            // Scale to fit minimap
+            const mmScale = Math.min(MINIMAP_SIZE / totalW, MINIMAP_SIZE / totalH);
+            const canvasW = totalW * mmScale;
+            const canvasH = totalH * mmScale;
+
+            // Draw image at correct position within the bounding box
+            minimapCanvas.width = canvasW;
+            minimapCanvas.height = canvasH;
+            const ctx = minimapCanvas.getContext('2d');
+            ctx.clearRect(0, 0, canvasW, canvasH);
+            const imgX = (0 - minX) * mmScale;
+            const imgY = (0 - minY) * mmScale;
+            ctx.drawImage(image, imgX, imgY, image.width * mmScale, image.height * mmScale);
+
+            // Position viewport rectangle
+            const vpX = (vbX - minX) * mmScale;
+            const vpY = (vbY - minY) * mmScale;
+            minimapViewport.style.left = vpX + 'px';
+            minimapViewport.style.top = vpY + 'px';
+            minimapViewport.style.width = (vbW * mmScale) + 'px';
+            minimapViewport.style.height = (vbH * mmScale) + 'px';
+        }
+
+        function updateMinimap() { updateMinimapViewport(); }
 
         function colorDistance(r1, g1, b1, r2, g2, b2) {
             return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
@@ -1963,10 +2050,10 @@
             return { x: svgPt.x, y: svgPt.y };
         }
 
-        // Handle size in image coords (compensates for zoom so handles appear constant on screen)
+        // Handle size in image coords (compensates for scale so handles appear constant on screen)
         const HANDLE_SCREEN_PX = 12;
         function getHandleSizeHit() {
-            return HANDLE_SCREEN_PX / (canvasScale * viewZoom);
+            return HANDLE_SCREEN_PX / getDisplayScale();
         }
 
         function getHitZone(pos) {
@@ -2198,8 +2285,9 @@
                 const newZoom = Math.min(Math.max(0.1, viewZoom * zoomFactor), 20);
 
                 // Zoom towards mouse position (relative to container center)
-                const displayW = image.width * canvasScale;
-                const displayH = image.height * canvasScale;
+                const baseScale = getDisplayScale() / viewZoom; // scale without zoom
+                const displayW = image.width * baseScale;
+                const displayH = image.height * baseScale;
                 const centerX = (cr.width - displayW) / 2;
                 const centerY = (cr.height - displayH) / 2;
 
@@ -2213,6 +2301,7 @@
                 viewOffset.y += viewY - viewY * scale;
                 viewZoom = newZoom;
                 updateHandles();
+                updateMinimap();
             } else {
                 // Two-finger pan
                 viewOffset.x -= e.deltaX;
@@ -2228,6 +2317,7 @@
             viewOffset = { x: 0, y: 0 };
             updateHandles();
             updateView();
+            updateMinimap();
         });
 
         // Keyboard shortcuts
