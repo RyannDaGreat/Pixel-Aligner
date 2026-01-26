@@ -2144,23 +2144,27 @@
                 svgElements.guide.setAttribute('x2', cx);
                 svgElements.guide.setAttribute('y2', bottomRight.y);
             } else {
-                // Diagonal line through anchor corner along aspect ratio
-                // Anchor is the opposite corner from the one being dragged (from rectStart, which doesn't move)
-                const anchor = {
-                    tl: { x: rectStart.x + rectStart.width, y: rectStart.y + rectStart.height },
-                    tr: { x: rectStart.x, y: rectStart.y + rectStart.height },
-                    bl: { x: rectStart.x + rectStart.width, y: rectStart.y },
-                    br: { x: rectStart.x, y: rectStart.y }
-                }[axisLock];
-                // Direction depends on corner: tl/br go one way, tr/bl go the other
-                const sign = (axisLock === 'tl' || axisLock === 'br') ? 1 : -1;
-                const aspect = lockedAspectRatio;
-                // Extend line to viewport edges
-                const extendX = Math.max(Math.abs(topLeft.x - anchor.x), Math.abs(bottomRight.x - anchor.x)) * 2;
-                svgElements.guide.setAttribute('x1', anchor.x - extendX);
-                svgElements.guide.setAttribute('y1', anchor.y - sign * extendX / aspect);
-                svgElements.guide.setAttribute('x2', anchor.x + extendX);
-                svgElements.guide.setAttribute('y2', anchor.y + sign * extendX / aspect);
+                // Diagonal line through the two corners that define the aspect constraint
+                // Use same anchor logic as resizeAspect: XOR handle position with flip state
+                const handle = axisLock;
+                const anchorRight = (handle[1] === 'l') !== rect.flipX;
+                const anchorBottom = (handle[0] === 't') !== rect.flipY;
+                // Anchor corner and its opposite define the diagonal
+                const ax = anchorRight ? rect.x + rect.width : rect.x;
+                const ay = anchorBottom ? rect.y + rect.height : rect.y;
+                const bx = anchorRight ? rect.x : rect.x + rect.width;
+                const by = anchorBottom ? rect.y : rect.y + rect.height;
+                // Extend line beyond the rect to fill viewport
+                const dx = bx - ax, dy = by - ay;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                const extendFactor = Math.max(
+                    Math.abs(topLeft.x - ax) + Math.abs(bottomRight.x - ax),
+                    Math.abs(topLeft.y - ay) + Math.abs(bottomRight.y - ay)
+                ) / len * 2;
+                svgElements.guide.setAttribute('x1', ax - dx * extendFactor);
+                svgElements.guide.setAttribute('y1', ay - dy * extendFactor);
+                svgElements.guide.setAttribute('x2', ax + dx * extendFactor);
+                svgElements.guide.setAttribute('y2', ay + dy * extendFactor);
             }
         }
 
@@ -2247,14 +2251,19 @@
             dragging = getHitZone(pos);
             if (dragging) {
                 document.body.classList.add('dragging');
+                modifiers.rightClick = e.button === 2;
                 pushUndo();
                 dragStart = pos;
                 rectStart = { ...rect };
                 nStart = parseInt(nSlider.value);
                 mStart = parseInt(mSlider.value);
                 lockedAspectRatio = rect.width / rect.height;
+                updateModifierUI();
             }
         });
+
+        // Prevent context menu on right-click drag
+        mainSvg.addEventListener('contextmenu', e => e.preventDefault());
 
         mainSvg.addEventListener('mousemove', e => {
             const pos = getMousePos(e);
@@ -2265,11 +2274,11 @@
         const hintShift = $('hintShift'), hintCmd = $('hintCmd'), hintSnap = $('hintSnap');
         const snapModeBtn = $('snapMode');
 
-        // Current modifier state (updated on key events)
-        const modifiers = { shift: false, cmd: false, alt: false };
+        // Current modifier state (updated on key/mouse events)
+        const modifiers = { shift: false, cmd: false, alt: false, rightClick: false };
 
-        /** Get effective snap state (base XOR alt modifier) */
-        function getEffectiveSnap() { return snapModeOn !== modifiers.alt; }
+        /** Get effective snap state (base XOR alt XOR rightClick) */
+        function getEffectiveSnap() { return snapModeOn !== (modifiers.alt !== modifiers.rightClick); }
 
         /** Update all UI to reflect effective state with current modifiers */
         function updateModifierUI() {
@@ -2461,6 +2470,7 @@
             dragging = null;
             lastDragEvent = null;
             lastDragDelta = { x: 0, y: 0 };
+            modifiers.rightClick = false;
             document.body.classList.remove('dragging');
             updateModifierUI();
             render(); // Hide guide line
