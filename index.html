@@ -512,7 +512,7 @@
             min-width: 24px;
             height: 22px;
             padding: 0 6px;
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.05);
             border: 1px solid var(--glass-border-subtle);
             border-radius: 4px;
             font-size: 11px;
@@ -2119,7 +2119,6 @@
                 return;
             }
             svgElements.guide.style.display = '';
-            svgElements.guide.setAttribute('stroke', color);
             const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
             // Convert screen corners to SVG coords for visible bounds
             const ctm = mainSvg.getScreenCTM()?.inverse();
@@ -2129,16 +2128,39 @@
             const topLeft = pt.matrixTransform(ctm);
             pt.x = window.innerWidth; pt.y = window.innerHeight;
             const bottomRight = pt.matrixTransform(ctm);
+
+            const isDiagonal = ['tl', 'tr', 'bl', 'br'].includes(axisLock);
+            svgElements.guide.setAttribute('stroke', color);
+            svgElements.guide.setAttribute('stroke-opacity', isDiagonal ? 0.5 : 1);
+
             if (axisLock === 'x') {
                 svgElements.guide.setAttribute('x1', topLeft.x);
                 svgElements.guide.setAttribute('y1', cy);
                 svgElements.guide.setAttribute('x2', bottomRight.x);
                 svgElements.guide.setAttribute('y2', cy);
-            } else {
+            } else if (axisLock === 'y') {
                 svgElements.guide.setAttribute('x1', cx);
                 svgElements.guide.setAttribute('y1', topLeft.y);
                 svgElements.guide.setAttribute('x2', cx);
                 svgElements.guide.setAttribute('y2', bottomRight.y);
+            } else {
+                // Diagonal line through anchor corner along aspect ratio
+                // Anchor is the opposite corner from the one being dragged (from rectStart, which doesn't move)
+                const anchor = {
+                    tl: { x: rectStart.x + rectStart.width, y: rectStart.y + rectStart.height },
+                    tr: { x: rectStart.x, y: rectStart.y + rectStart.height },
+                    bl: { x: rectStart.x + rectStart.width, y: rectStart.y },
+                    br: { x: rectStart.x, y: rectStart.y }
+                }[axisLock];
+                // Direction depends on corner: tl/br go one way, tr/bl go the other
+                const sign = (axisLock === 'tl' || axisLock === 'br') ? 1 : -1;
+                const aspect = lockedAspectRatio;
+                // Extend line to viewport edges
+                const extendX = Math.max(Math.abs(topLeft.x - anchor.x), Math.abs(bottomRight.x - anchor.x)) * 2;
+                svgElements.guide.setAttribute('x1', anchor.x - extendX);
+                svgElements.guide.setAttribute('y1', anchor.y - sign * extendX / aspect);
+                svgElements.guide.setAttribute('x2', anchor.x + extendX);
+                svgElements.guide.setAttribute('y2', anchor.y + sign * extendX / aspect);
             }
         }
 
@@ -2268,7 +2290,8 @@
             modifiers.alt = e.altKey;
         }
 
-        /** Compute axis lock from current state (single source of truth) */
+        /** Compute axis lock from current state (single source of truth)
+         *  Returns 'x', 'y', or corner name for diagonal (e.g. 'br', 'tl') */
         function getAxisLock() {
             if (!dragging || !modifiers.cmd) return null;
             if (dragging === 'left' || dragging === 'right') return 'x';
@@ -2276,6 +2299,8 @@
             if (dragging === 'move') {
                 return Math.abs(lastDragDelta.x) > Math.abs(lastDragDelta.y) ? 'x' : 'y';
             }
+            // Corner drag = diagonal constraint along aspect ratio
+            if (['tl', 'tr', 'bl', 'br'].includes(dragging)) return dragging;
             return null;
         }
 
