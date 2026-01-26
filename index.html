@@ -1291,6 +1291,10 @@
             update();
         }
 
+        function resetNMToOne() {
+            nSlider.value = nInput.value = mSlider.value = mInput.value = 1;
+        }
+
         nSlider.addEventListener('input', () => syncNM('n', parseInt(nSlider.value)));
         mSlider.addEventListener('input', () => syncNM('m', parseInt(mSlider.value)));
         nInput.addEventListener('input', () => syncNM('n', parseInt(nInput.value)));
@@ -1325,6 +1329,7 @@
             }
             pushUndo();
             tileMode = val;
+            if (val === 'custom') resetNMToOne();
             update();
         });
 
@@ -1339,7 +1344,7 @@
                     SHAPES.custom.contours = contours;
                     pushUndo();
                     tileMode = 'custom';
-                    nSlider.value = nInput.value = mSlider.value = mInput.value = 1;
+                    resetNMToOne();
                     setBtnGroupValue('tileBtns', 'custom');
                     update();
                 } catch (err) {
@@ -1856,12 +1861,26 @@
             minimapViewport.style.height = (vbH * mmScale) + 'px';
         }
 
-        // Reset view button click handler
+        // Reset view button click handler - animated
         resetViewBtn.addEventListener('click', () => {
-            viewZoom = 1;
-            viewOffset = { x: 0, y: 0 };
-            updateView();
-            updateMinimap();
+            const startZoom = viewZoom;
+            const startOffset = { x: viewOffset.x, y: viewOffset.y };
+            const deltaZoom = 1 - startZoom;
+            const deltaOffset = { x: -startOffset.x, y: -startOffset.y };
+            const duration = 300;
+            const startTime = performance.now();
+
+            function animate(now) {
+                const t = Math.min((now - startTime) / duration, 1);
+                const ease = 1 - Math.pow(1 - t, 3); // ease-out cubic
+                viewZoom = startZoom + deltaZoom * ease;
+                viewOffset.x = startOffset.x + deltaOffset.x * ease;
+                viewOffset.y = startOffset.y + deltaOffset.y * ease;
+                updateView();
+                updateMinimap();
+                if (t < 1) requestAnimationFrame(animate);
+            }
+            requestAnimationFrame(animate);
         });
 
         function updateMinimap() { updateMinimapViewport(); }
