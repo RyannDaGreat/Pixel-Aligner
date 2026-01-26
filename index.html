@@ -1876,6 +1876,7 @@
                 viewZoom = startZoom + deltaZoom * ease;
                 viewOffset.x = startOffset.x + deltaOffset.x * ease;
                 viewOffset.y = startOffset.y + deltaOffset.y * ease;
+                updateHandles();
                 updateView();
                 updateMinimap();
                 if (t < 1) requestAnimationFrame(animate);
