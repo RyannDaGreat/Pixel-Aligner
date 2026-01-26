@@ -1908,16 +1908,22 @@
             const totalW = maxX - minX;
             const totalH = maxY - minY;
 
-            // Scale to fit minimap
+            // Scale to fit minimap (with retina support)
+            const dpr = window.devicePixelRatio || 1;
             const mmScale = Math.min(MINIMAP_SIZE / totalW, MINIMAP_SIZE / totalH);
             const canvasW = totalW * mmScale;
             const canvasH = totalH * mmScale;
 
-            // Draw image at correct position within the bounding box
-            minimapCanvas.width = canvasW;
-            minimapCanvas.height = canvasH;
+            // Set canvas size for retina
+            minimapCanvas.width = canvasW * dpr;
+            minimapCanvas.height = canvasH * dpr;
+            minimapCanvas.style.width = canvasW + 'px';
+            minimapCanvas.style.height = canvasH + 'px';
             const ctx = minimapCanvas.getContext('2d');
+            ctx.scale(dpr, dpr);
             ctx.clearRect(0, 0, canvasW, canvasH);
+
+            // Draw image at correct position within the bounding box
             const imgX = (0 - minX) * mmScale;
             const imgY = (0 - minY) * mmScale;
             ctx.drawImage(image, imgX, imgY, image.width * mmScale, image.height * mmScale);
@@ -2144,19 +2150,30 @@
                 svgElements.guide.setAttribute('x2', cx);
                 svgElements.guide.setAttribute('y2', bottomRight.y);
             } else {
-                // Diagonal line through anchor and opposite corner
-                // Use same logic as resizeAspect for one source of truth
-                const anchor = getAspectAnchor(rectStart, axisLock, lastDragDelta.x, lastDragDelta.y);
-                const dx = anchor.oppositeX - anchor.x, dy = anchor.oppositeY - anchor.y;
-                const len = Math.sqrt(dx * dx + dy * dy) || 1;
-                const extendFactor = Math.max(
-                    Math.abs(topLeft.x - anchor.x) + Math.abs(bottomRight.x - anchor.x),
-                    Math.abs(topLeft.y - anchor.y) + Math.abs(bottomRight.y - anchor.y)
-                ) / len * 2;
-                svgElements.guide.setAttribute('x1', anchor.x - dx * extendFactor);
-                svgElements.guide.setAttribute('y1', anchor.y - dy * extendFactor);
-                svgElements.guide.setAttribute('x2', anchor.x + dx * extendFactor);
-                svgElements.guide.setAttribute('y2', anchor.y + dy * extendFactor);
+                // Diagonal line through the fixed anchor corner (from rectStart)
+                // Anchor is the opposite corner from the one being dragged
+                const anchor = {
+                    tl: { x: rectStart.x + rectStart.width, y: rectStart.y + rectStart.height },
+                    tr: { x: rectStart.x, y: rectStart.y + rectStart.height },
+                    bl: { x: rectStart.x + rectStart.width, y: rectStart.y },
+                    br: { x: rectStart.x, y: rectStart.y }
+                }[axisLock];
+                // Get flip state from current resize (same as resizeAspect uses)
+                const r = resizeFree(rectStart, axisLock, lastDragDelta.x, lastDragDelta.y);
+                // Base sign: tl/br diagonal has positive slope, tr/bl has negative
+                let sign = (axisLock === 'tl' || axisLock === 'br') ? 1 : -1;
+                // Each flip inverts the slope
+                if (r.flipX) sign *= -1;
+                if (r.flipY) sign *= -1;
+                const aspect = lockedAspectRatio;
+                const extendX = Math.max(
+                    Math.abs(topLeft.x - anchor.x),
+                    Math.abs(bottomRight.x - anchor.x)
+                ) * 2;
+                svgElements.guide.setAttribute('x1', anchor.x - extendX);
+                svgElements.guide.setAttribute('y1', anchor.y - sign * extendX / aspect);
+                svgElements.guide.setAttribute('x2', anchor.x + extendX);
+                svgElements.guide.setAttribute('y2', anchor.y + sign * extendX / aspect);
             }
         }
 
