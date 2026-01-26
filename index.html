@@ -1922,16 +1922,16 @@
             const imgY = (0 - minY) * mmScale;
             ctx.drawImage(image, imgX, imgY, image.width * mmScale, image.height * mmScale);
 
-            // Draw shape bounds rectangle with rounded corners
+            // Draw shape bounds rectangle with same corner radius as minimap panel
             const rectX = (rect.x - minX) * mmScale;
             const rectY = (rect.y - minY) * mmScale;
             const rectW = rect.width * mmScale;
             const rectH = rect.height * mmScale;
-            const radius = 3;
+            const panelRadius = parseFloat(getComputedStyle(minimap).borderRadius) || 0;
             ctx.strokeStyle = `rgb(${gridColor.join(',')})`;
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.roundRect(rectX, rectY, rectW, rectH, radius);
+            ctx.roundRect(rectX, rectY, rectW, rectH, panelRadius);
             ctx.stroke();
 
             // Position viewport rectangle
@@ -2270,10 +2270,10 @@
 
         /** Compute axis lock from current state (single source of truth) */
         function getAxisLock() {
-            if (!dragging) return null;
+            if (!dragging || !modifiers.cmd) return null;
             if (dragging === 'left' || dragging === 'right') return 'x';
             if (dragging === 'top' || dragging === 'bottom') return 'y';
-            if (dragging === 'move' && modifiers.cmd) {
+            if (dragging === 'move') {
                 return Math.abs(lastDragDelta.x) > Math.abs(lastDragDelta.y) ? 'x' : 'y';
             }
             return null;
